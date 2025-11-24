@@ -1,4 +1,3 @@
-# main.py
 import os
 import logging
 from datetime import datetime
@@ -54,8 +53,8 @@ async def register_user(update: Update):
 
 async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
-    Bot kín: chỉ user đã được OWNER duyệt mới được dùng.
-    /start và /help có thể không gọi hàm này.
+    Bot kín: chỉ user đã được OWNER duyệt mới được dùng các lệnh lưu trữ.
+    /start, /help, /me vẫn dùng được để xem hướng dẫn.
     """
     user = update.effective_user
     if user is None:
@@ -139,6 +138,7 @@ async def save_file_to_db(
         mime_type=mime_type,
     )
 
+    # ghi lại ID file cuối cùng (không bắt buộc, nhưng có thể dùng sau này)
     context.chat_data["last_file_db_id"] = file_db_id
     return file_db_id
 
@@ -163,7 +163,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args:
         param = args[0]
 
-        # Xem file
+        # Xem file (cho phép cả người chưa được duyệt – chỉ xem được khi có link)
         if param.startswith("file"):
             try:
                 file_db_id = int(param[4:])
@@ -202,7 +202,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             folder = db.get_folder_by_id(folder_id)
             if not folder:
-                await update.message.reply_text("Không tìm thấy thư mục (có thể đã bị xoá).")
+                await update.message.reply_text("Không tìm thấy thư mục (có thể đã xoá).")
                 return
 
             files = db.get_files_by_folder(folder_id)
@@ -233,12 +233,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # /start bình thường
     text = (
         "🤖 Bot lưu trữ file kiểu game offline (tất cả nằm trong 1 file <code>files.db</code>).\n\n"
-        "📤 Cách dùng cơ bản:\n"
-        "1️⃣ /upload → gửi 1 file → /getlink để lấy link share file\n"
-        "2️⃣ /folder &lt;tên&gt; → tạo/chọn thư mục rồi /upload trong thư mục đó\n"
-        "3️⃣ /myfolders → xem danh sách thư mục\n"
-        "4️⃣ /folderlink → lấy link thư mục đang chọn\n\n"
-        "Bot là bot kín, admin phải /approve ID thì mới dùng được các lệnh lưu trữ."
+        "📤 Cách dùng nhanh:\n"
+        "• Gửi 1 file cho bot → gõ /getlink để lấy link.\n"
+        "• Muốn sắp xếp theo thư mục: /folder &lt;tên&gt; → gửi file → /folderlink.\n\n"
+        "Bot là bot kín, admin phải /approve ID thì mới upload / tạo thư mục được."
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -250,8 +248,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 /help - Xem lại hướng dẫn\n"
         "🔹 /me - Xem ID + username Telegram\n\n"
         "📤 UPLOAD:\n"
-        "🔹 /upload - Chuẩn bị upload 1 file → sau đó gửi file\n"
-        "🔹 /getlink - Lấy link của file vừa upload gần nhất\n\n"
+        "🔹 Gửi file trực tiếp cho bot rồi gõ /getlink\n"
+        "🔹 /upload - Chỉ để nhắc cách dùng (không bắt buộc nữa)\n\n"
         "📁 THƯ MỤC:\n"
         "🔹 /folder <tên> - Tạo hoặc chọn thư mục\n"
         "🔹 /myfolders - Xem thư mục của bạn\n"
@@ -281,11 +279,8 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
         return
 
-    context.chat_data["waiting_upload"] = True
-    context.chat_data["last_file_db_id"] = None
     await update.message.reply_text(
-        "✅ Bot đang chờ file.\n"
-        "👉 Hãy gửi <b>1 file</b> (document / ảnh / video / audio) vào chat này.\n"
+        "✅ Hãy gửi 1 file (document / ảnh / video / audio) cho bot.\n"
         "Sau đó gõ /getlink để nhận link chia sẻ.",
         parse_mode="HTML",
     )
@@ -296,19 +291,21 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
         return
 
-    file_db_id = context.chat_data.get("last_file_db_id")
-    if not file_db_id:
+    user = update.effective_user
+    row = db.get_last_file_by_owner(user.id)
+    if not row:
         await update.message.reply_text(
-            "❌ Bạn chưa upload file nào trong phiên gần đây.\n"
-            "Hãy gõ /upload rồi gửi file trước.",
+            "❌ Bạn chưa upload file nào.\n"
+            "Hãy gửi 1 file cho bot (hoặc gõ /upload rồi gửi file) trước.",
         )
         return
 
+    file_db_id = row["id"]
     bot_username = context.bot.username
     link = build_file_deeplink(bot_username, file_db_id)
 
     await update.message.reply_text(
-        "🔗 Link tải file của bạn:\n"
+        "🔗 Link tải file gần nhất của bạn:\n"
         f"{link}\n\n"
         "Gửi link này cho người khác, họ bấm Start bot sẽ nhận được file.",
     )
@@ -348,7 +345,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📂 Tên: <b>{name}</b>\n"
         f"🆔 ID: <code>{folder_id}</code>\n\n"
         f"🔗 Link thư mục: {link}\n\n"
-        "Giờ bạn có thể dùng /upload để up file vào thư mục này.",
+        "Giờ bạn có thể gửi file để up vào thư mục này.",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -518,8 +515,6 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
         return
-    if not context.chat_data.get("waiting_upload"):
-        return
 
     doc = update.message.document
     file_db_id = await save_file_to_db(
@@ -535,7 +530,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
-        context.chat_data["waiting_upload"] = False
         await update.message.reply_text(
             f"✅ File đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link chia sẻ.",
@@ -544,8 +538,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
-        return
-    if not context.chat_data.get("waiting_upload"):
         return
 
     photo = update.message.photo[-1]
@@ -562,7 +554,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
-        context.chat_data["waiting_upload"] = False
         await update.message.reply_text(
             f"✅ Ảnh đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
@@ -571,8 +562,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
-        return
-    if not context.chat_data.get("waiting_upload"):
         return
 
     video = update.message.video
@@ -589,7 +578,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
-        context.chat_data["waiting_upload"] = False
         await update.message.reply_text(
             f"✅ Video đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
@@ -598,8 +586,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
-        return
-    if not context.chat_data.get("waiting_upload"):
         return
 
     audio = update.message.audio
@@ -616,7 +602,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
-        context.chat_data["waiting_upload"] = False
         await update.message.reply_text(
             f"✅ Audio đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
@@ -625,8 +610,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
-        return
-    if not context.chat_data.get("waiting_upload"):
         return
 
     voice = update.message.voice
@@ -643,7 +626,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
-        context.chat_data["waiting_upload"] = False
         await update.message.reply_text(
             f"✅ Voice đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
@@ -655,9 +637,9 @@ async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg in ("hi", "hello", "chào", "alo"):
         await update.message.reply_text(
             "Chào bạn 👋\n"
-            "Dùng: /upload → gửi 1 file → /getlink để lấy link file.\n"
-            "Hoặc: /folder <tên> → /upload → /folderlink.\n"
-            "Bot kín: admin phải /approve ID mới dùng được.",
+            "Gửi file cho bot rồi gõ /getlink để lấy link.\n"
+            "Muốn sắp xếp theo thư mục: /folder <tên> → gửi file → /folderlink.\n"
+            "Bot kín: admin phải /approve ID mới upload được.",
         )
 
 
