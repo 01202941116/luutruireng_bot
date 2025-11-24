@@ -1,4 +1,3 @@
-# db.py
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -46,7 +45,7 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_telegram_id)"
     )
 
-    # Bảng file: LƯU THẲNG BLOB trong DB
+    # Bảng file: lưu thẳng dữ liệu file trong DB (BLOB)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS files (
@@ -262,3 +261,21 @@ def get_files_by_folder(folder_id: int):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_last_file_by_owner(owner_telegram_id: int):
+    """Lấy file mới nhất mà user này đã upload."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT * FROM files
+        WHERE owner_telegram_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (owner_telegram_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
