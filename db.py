@@ -1,3 +1,4 @@
+# db.py
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Bảng user
+    # Bảng user (có cột is_approved để bật bot kín)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -24,12 +25,13 @@ def init_db():
             username TEXT,
             first_name TEXT,
             last_name TEXT,
+            is_approved INTEGER DEFAULT 0,
             created_at TEXT
         )
         """
     )
 
-    # Bảng folder
+    # Bảng thư mục
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS folders (
@@ -44,7 +46,7 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_telegram_id)"
     )
 
-    # Bảng file: LƯU THẲNG DỮ LIỆU FILE TRONG DB (file_blob)
+    # Bảng file: LƯU THẲNG BLOB trong DB
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS files (
@@ -70,6 +72,9 @@ def init_db():
     conn.close()
 
 
+# ---------- USER ---------- #
+
+
 def upsert_user(telegram_id, username=None, first_name=None, last_name=None):
     conn = get_conn()
     cur = conn.cursor()
@@ -90,6 +95,26 @@ def upsert_user(telegram_id, username=None, first_name=None, last_name=None):
             last_name,
             datetime.utcnow().isoformat(),
         ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_by_telegram_id(telegram_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_user_approved(telegram_id: int, approved: bool):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET is_approved = ? WHERE telegram_id = ?",
+        (1 if approved else 0, telegram_id),
     )
     conn.commit()
     conn.close()
