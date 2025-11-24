@@ -1,3 +1,4 @@
+# main.py
 import os
 import logging
 from datetime import datetime
@@ -15,14 +16,13 @@ from telegram.ext import (
     filters,
 )
 
-import db  # file db.py
+import db
 
 # ---------------------- CONFIG --------------------------- #
 
 load_dotenv()
 TOKEN = os.getenv("Token")
-# Không cần FOLDER_DIR nữa, tất cả lưu vào files.db
-BASE_INFO = "Tất cả dữ liệu nằm trong files.db"
+OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)  # ID chủ bot
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -40,7 +40,7 @@ def sanitize_filename(name: str) -> str:
 
 
 async def register_user(update: Update):
-    """Lưu user vào bảng users."""
+    """Lưu user vào DB."""
     user = update.effective_user
     if user is None:
         return
@@ -50,6 +50,50 @@ async def register_user(update: Update):
         first_name=user.first_name,
         last_name=user.last_name,
     )
+
+
+async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Bot kín: chỉ user đã được OWNER duyệt mới được dùng.
+    /start và /help có thể không gọi hàm này.
+    """
+    user = update.effective_user
+    if user is None:
+        return False
+
+    # Chủ bot luôn được phép
+    if OWNER_ID and user.id == OWNER_ID:
+        return True
+
+    row = db.get_user_by_telegram_id(user.id)
+    if row and row["is_approved"]:
+        return True
+
+    # Chưa được duyệt
+    await update.message.reply_text(
+        "🔒 Đây là bot kín.\n"
+        "Bạn chưa được admin duyệt sử dụng.\n"
+        "Vui lòng chờ admin kiểm tra và mở quyền."
+    )
+
+    # Gửi thông báo tới owner (nếu có)
+    if OWNER_ID:
+        try:
+            await context.bot.send_message(
+                OWNER_ID,
+                (
+                    "🔔 Có người xin sử dụng bot:\n"
+                    f"ID: <code>{user.id}</code>\n"
+                    f"Username: @{user.username}\n\n"
+                    f"Duyệt: /approve {user.id}\n"
+                    f"Chặn: /block {user.id}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    return False
 
 
 async def save_file_to_db(
@@ -63,7 +107,7 @@ async def save_file_to_db(
     file_size: int | None = None,
     mime_type: str | None = None,
 ):
-    """Tải file vào RAM, lưu thẳng vào DB (BLOB)."""
+    """Tải file vào RAM, lưu BLOB vào DB, trả về file_db_id."""
 
     user = update.effective_user
     if user is None:
@@ -72,17 +116,14 @@ async def save_file_to_db(
 
     await register_user(update)
 
-    # folder hiện tại (có thể None)
     current_folder_id = context.chat_data.get("current_folder_id")
 
-    # tên file
     if filename_hint:
         filename = sanitize_filename(filename_hint)
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{file_type}_{file_unique_id}_{ts}"
 
-    # tải file thành bytes
     tg_file = await file_obj.get_file()
     file_bytes = await tg_file.download_as_bytearray()
 
@@ -118,11 +159,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
 
-    # Deep-link: file / folder
+    # Deep-link: /start file123 hoặc /start folder5
     if args:
         param = args[0]
 
-        # xem file
+        # Xem file
         if param.startswith("file"):
             try:
                 file_db_id = int(param[4:])
@@ -151,7 +192,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # xem folder
+        # Xem thư mục
         if param.startswith("folder"):
             try:
                 folder_id = int(param[6:])
@@ -191,15 +232,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # /start bình thường
     text = (
-        "🤖 Bot lưu trữ file kiểu game offline:\n"
-        "👉 Tất cả file + dữ liệu đều gói trong <b>1 file duy nhất</b>: <code>files.db</code>\n\n"
+        "🤖 Bot lưu trữ file kiểu game offline (tất cả nằm trong 1 file <code>files.db</code>).\n\n"
         "📤 Cách dùng cơ bản:\n"
         "1️⃣ /upload → gửi 1 file → /getlink để lấy link share file\n"
-        "2️⃣ /folder <tên> → tạo/chọn thư mục\n"
-        "   Sau đó /upload để up file vào thư mục đó\n"
-        "3️⃣ /myfolders → xem thư mục của bạn\n"
+        "2️⃣ /folder &lt;tên&gt; → tạo/chọn thư mục rồi /upload trong thư mục đó\n"
+        "3️⃣ /myfolders → xem danh sách thư mục\n"
         "4️⃣ /folderlink → lấy link thư mục đang chọn\n\n"
-        "Ai bấm link file/folder sẽ nhận được nội dung tương ứng."
+        "Bot là bot kín, admin phải /approve ID thì mới dùng được các lệnh lưu trữ."
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -211,15 +250,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 /help - Xem lại hướng dẫn\n"
         "🔹 /me - Xem ID + username Telegram\n\n"
         "📤 UPLOAD:\n"
-        "🔹 /upload - Chuẩn bị upload 1 file\n"
-        "   → Sau đó gửi file\n"
+        "🔹 /upload - Chuẩn bị upload 1 file → sau đó gửi file\n"
         "🔹 /getlink - Lấy link của file vừa upload gần nhất\n\n"
         "📁 THƯ MỤC:\n"
         "🔹 /folder <tên> - Tạo hoặc chọn thư mục\n"
-        "🔹 /myfolders - Xem các thư mục của bạn\n"
+        "🔹 /myfolders - Xem thư mục của bạn\n"
         "🔹 /folderlink - Lấy link thư mục đang chọn\n"
         "🔹 /searchfolder <từ khóa> - Tìm thư mục theo tên\n\n"
-        "💾 Toàn bộ dữ liệu đều nằm trong 1 file: files.db",
+        "👑 ADMIN (OWNER):\n"
+        "🔹 /approve TELEGRAM_ID - Duyệt user dùng bot\n"
+        "🔹 /block TELEGRAM_ID   - Chặn user dùng bot\n\n"
+        "💾 Toàn bộ dữ liệu + file lưu trong 1 file: files.db",
+        parse_mode="HTML",
     )
 
 
@@ -229,13 +271,16 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Thông tin Telegram của bạn:\n"
         f"ID: <code>{user.id}</code>\n"
         f"Username: <code>{user.username or 'không có'}</code>\n\n"
-        "Dùng ID + username này nếu sau này bạn đăng nhập web.",
+        "Dùng ID này để admin /approve cho bạn hoặc set OWNER_ID cho bot."
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user(update)
+    if not await check_access(update, context):
+        return
+
     context.chat_data["waiting_upload"] = True
     context.chat_data["last_file_db_id"] = None
     await update.message.reply_text(
@@ -248,6 +293,8 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user(update)
+    if not await check_access(update, context):
+        return
 
     file_db_id = context.chat_data.get("last_file_db_id")
     if not file_db_id:
@@ -272,6 +319,9 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user(update)
+    if not await check_access(update, context):
+        return
+
     user = update.effective_user
 
     if not context.args:
@@ -306,6 +356,9 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user(update)
+    if not await check_access(update, context):
+        return
+
     user = update.effective_user
 
     folders = db.get_folders_by_owner(user.id)
@@ -329,6 +382,10 @@ async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+    if not await check_access(update, context):
+        return
+
     current_folder_id = context.chat_data.get("current_folder_id")
     if not current_folder_id:
         await update.message.reply_text(
@@ -357,6 +414,9 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user(update)
+    if not await check_access(update, context):
+        return
+
     user = update.effective_user
 
     if not context.args:
@@ -387,10 +447,77 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+# ---------- ADMIN COMMANDS (OWNER) ---------- #
+
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user is None or user.id != OWNER_ID:
+        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Dùng: <code>/approve TELEGRAM_ID</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID không hợp lệ.")
+        return
+
+    db.set_user_approved(target_id, True)
+    await update.message.reply_text(f"✅ Đã duyệt user {target_id} dùng bot.")
+
+    try:
+        await context.bot.send_message(
+            target_id,
+            "✅ Admin đã duyệt cho bạn sử dụng bot. Bạn có thể dùng /upload, /folder...",
+        )
+    except Exception:
+        pass
+
+
+async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user is None or user.id != OWNER_ID:
+        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Dùng: <code>/block TELEGRAM_ID</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID không hợp lệ.")
+        return
+
+    db.set_user_approved(target_id, False)
+    await update.message.reply_text(f"⛔ Đã chặn user {target_id} dùng bot.")
+
+    try:
+        await context.bot.send_message(
+            target_id,
+            "⛔ Admin đã chặn quyền sử dụng bot của bạn.",
+        )
+    except Exception:
+        pass
+
+
 # ---------------------- FILE HANDLERS --------------------------- #
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
     if not context.chat_data.get("waiting_upload"):
         return
 
@@ -416,6 +543,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
     if not context.chat_data.get("waiting_upload"):
         return
 
@@ -441,6 +570,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
     if not context.chat_data.get("waiting_upload"):
         return
 
@@ -466,6 +597,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
     if not context.chat_data.get("waiting_upload"):
         return
 
@@ -491,6 +624,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
     if not context.chat_data.get("waiting_upload"):
         return
 
@@ -520,9 +655,9 @@ async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg in ("hi", "hello", "chào", "alo"):
         await update.message.reply_text(
             "Chào bạn 👋\n"
-            "Dùng: /upload → gửi 1 file → /getlink để lấy link file\n"
+            "Dùng: /upload → gửi 1 file → /getlink để lấy link file.\n"
             "Hoặc: /folder <tên> → /upload → /folderlink.\n"
-            "Toàn bộ dữ liệu lưu trong 1 file: files.db",
+            "Bot kín: admin phải /approve ID mới dùng được.",
         )
 
 
@@ -535,15 +670,15 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not TOKEN:
-        print("❌ Thiếu Token trong .env (biến Token).")
+        print("❌ Thiếu Token trong biến môi trường 'Token'.")
         return
 
     db.init_db()
-    print(Fore.GREEN + f"DB file: files.db  ({BASE_INFO})")
+    print(Fore.GREEN + "DB file: files.db (lưu tất cả trong 1 file)")
 
     app = Application.builder().token(TOKEN).build()
 
-    # command
+    # Command
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("me", me_command))
@@ -553,18 +688,20 @@ def main():
     app.add_handler(CommandHandler("myfolders", myfolders_command))
     app.add_handler(CommandHandler("folderlink", folderlink_command))
     app.add_handler(CommandHandler("searchfolder", searchfolder_command))
+    app.add_handler(CommandHandler("approve", approve_command))
+    app.add_handler(CommandHandler("block", block_command))
 
-    # file handlers
+    # File handlers
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
-    # text
+    # Text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_fallback))
 
-    # error
+    # Error
     app.add_error_handler(error_handler)
 
     print(Fore.BLUE + "Bot is running..." + Fore.GREEN)
