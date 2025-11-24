@@ -1,0 +1,575 @@
+import os
+import logging
+from datetime import datetime
+from io import BytesIO
+
+from dotenv import load_dotenv
+from colorama import Fore
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
+import db  # file db.py
+
+# ---------------------- CONFIG --------------------------- #
+
+load_dotenv()
+TOKEN = os.getenv("Token")
+# Không cần FOLDER_DIR nữa, tất cả lưu vào files.db
+BASE_INFO = "Tất cả dữ liệu nằm trong files.db"
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+
+# ---------------------- HELPERS --------------------------- #
+
+
+def sanitize_filename(name: str) -> str:
+    """Làm sạch tên file."""
+    name = os.path.basename(name)
+    return name.replace("\n", "_").replace("\r", "_")
+
+
+async def register_user(update: Update):
+    """Lưu user vào bảng users."""
+    user = update.effective_user
+    if user is None:
+        return
+    db.upsert_user(
+        telegram_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
+
+
+async def save_file_to_db(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    file_obj,
+    file_type: str,
+    filename_hint: str | None,
+    file_unique_id: str,
+    file_id: str,
+    file_size: int | None = None,
+    mime_type: str | None = None,
+):
+    """Tải file vào RAM, lưu thẳng vào DB (BLOB)."""
+
+    user = update.effective_user
+    if user is None:
+        await update.message.reply_text("Lỗi: không lấy được thông tin user.")
+        return None
+
+    await register_user(update)
+
+    # folder hiện tại (có thể None)
+    current_folder_id = context.chat_data.get("current_folder_id")
+
+    # tên file
+    if filename_hint:
+        filename = sanitize_filename(filename_hint)
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{file_type}_{file_unique_id}_{ts}"
+
+    # tải file thành bytes
+    tg_file = await file_obj.get_file()
+    file_bytes = await tg_file.download_as_bytearray()
+
+    file_db_id = db.insert_file(
+        owner_telegram_id=user.id,
+        folder_id=current_folder_id,
+        file_type=file_type,
+        file_unique_id=file_unique_id,
+        file_id=file_id,
+        filename=filename,
+        file_bytes=file_bytes,
+        file_size=file_size,
+        mime_type=mime_type,
+    )
+
+    context.chat_data["last_file_db_id"] = file_db_id
+    return file_db_id
+
+
+def build_file_deeplink(bot_username: str, file_db_id: int) -> str:
+    return f"https://t.me/{bot_username}?start=file{file_db_id}"
+
+
+def build_folder_deeplink(bot_username: str, folder_id: int) -> str:
+    return f"https://t.me/{bot_username}?start=folder{folder_id}"
+
+
+# ---------------------- COMMAND HANDLERS --------------------------- #
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+
+    args = context.args
+
+    # Deep-link: file / folder
+    if args:
+        param = args[0]
+
+        # xem file
+        if param.startswith("file"):
+            try:
+                file_db_id = int(param[4:])
+            except ValueError:
+                await update.message.reply_text("Link file không hợp lệ.")
+                return
+
+            row = db.get_file_by_id(file_db_id)
+            if not row:
+                await update.message.reply_text("Không tìm thấy file (có thể đã bị xoá).")
+                return
+
+            blob = row["file_blob"]
+            if blob is None:
+                await update.message.reply_text("Dữ liệu file không tồn tại.")
+                return
+
+            bio = BytesIO(blob)
+            fname = row["filename"] or "file"
+            bio.name = fname
+
+            await update.message.reply_document(
+                document=bio,
+                filename=fname,
+                caption=f"📁 File ID: {file_db_id}",
+            )
+            return
+
+        # xem folder
+        if param.startswith("folder"):
+            try:
+                folder_id = int(param[6:])
+            except ValueError:
+                await update.message.reply_text("Link thư mục không hợp lệ.")
+                return
+
+            folder = db.get_folder_by_id(folder_id)
+            if not folder:
+                await update.message.reply_text("Không tìm thấy thư mục (có thể đã bị xoá).")
+                return
+
+            files = db.get_files_by_folder(folder_id)
+            if not files:
+                await update.message.reply_text(
+                    f"📂 Thư mục <b>{folder['name']}</b> hiện chưa có file nào.",
+                    parse_mode="HTML",
+                )
+                return
+
+            bot_username = context.bot.username
+            lines = [
+                f"📂 Thư mục: <b>{folder['name']}</b>\n",
+                "Danh sách file:",
+            ]
+            for f in files[:50]:
+                link = build_file_deeplink(bot_username, f["id"])
+                fname = f["filename"] or f"file_{f['id']}"
+                lines.append(f"• <a href=\"{link}\">{fname}</a>")
+
+            await update.message.reply_text(
+                "\n".join(lines),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            return
+
+    # /start bình thường
+    text = (
+        "🤖 Bot lưu trữ file kiểu game offline:\n"
+        "👉 Tất cả file + dữ liệu đều gói trong <b>1 file duy nhất</b>: <code>files.db</code>\n\n"
+        "📤 Cách dùng cơ bản:\n"
+        "1️⃣ /upload → gửi 1 file → /getlink để lấy link share file\n"
+        "2️⃣ /folder <tên> → tạo/chọn thư mục\n"
+        "   Sau đó /upload để up file vào thư mục đó\n"
+        "3️⃣ /myfolders → xem thư mục của bạn\n"
+        "4️⃣ /folderlink → lấy link thư mục đang chọn\n\n"
+        "Ai bấm link file/folder sẽ nhận được nội dung tương ứng."
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📚 Lệnh bot:\n\n"
+        "🔹 /start - Bắt đầu / xem hướng dẫn\n"
+        "🔹 /help - Xem lại hướng dẫn\n"
+        "🔹 /me - Xem ID + username Telegram\n\n"
+        "📤 UPLOAD:\n"
+        "🔹 /upload - Chuẩn bị upload 1 file\n"
+        "   → Sau đó gửi file\n"
+        "🔹 /getlink - Lấy link của file vừa upload gần nhất\n\n"
+        "📁 THƯ MỤC:\n"
+        "🔹 /folder <tên> - Tạo hoặc chọn thư mục\n"
+        "🔹 /myfolders - Xem các thư mục của bạn\n"
+        "🔹 /folderlink - Lấy link thư mục đang chọn\n"
+        "🔹 /searchfolder <từ khóa> - Tìm thư mục theo tên\n\n"
+        "💾 Toàn bộ dữ liệu đều nằm trong 1 file: files.db",
+    )
+
+
+async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = (
+        "Thông tin Telegram của bạn:\n"
+        f"ID: <code>{user.id}</code>\n"
+        f"Username: <code>{user.username or 'không có'}</code>\n\n"
+        "Dùng ID + username này nếu sau này bạn đăng nhập web.",
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+    context.chat_data["waiting_upload"] = True
+    context.chat_data["last_file_db_id"] = None
+    await update.message.reply_text(
+        "✅ Bot đang chờ file.\n"
+        "👉 Hãy gửi <b>1 file</b> (document / ảnh / video / audio) vào chat này.\n"
+        "Sau đó gõ /getlink để nhận link chia sẻ.",
+        parse_mode="HTML",
+    )
+
+
+async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+
+    file_db_id = context.chat_data.get("last_file_db_id")
+    if not file_db_id:
+        await update.message.reply_text(
+            "❌ Bạn chưa upload file nào trong phiên gần đây.\n"
+            "Hãy gõ /upload rồi gửi file trước.",
+        )
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+
+    await update.message.reply_text(
+        "🔗 Link tải file của bạn:\n"
+        f"{link}\n\n"
+        "Gửi link này cho người khác, họ bấm Start bot sẽ nhận được file.",
+    )
+
+
+# ---------- FOLDER COMMANDS ---------- #
+
+
+async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+    user = update.effective_user
+
+    if not context.args:
+        await update.message.reply_text(
+            "Dùng: <code>/folder ten_thu_muc</code>\n"
+            "Ví dụ: <code>/folder phim2025</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    name = " ".join(context.args).strip()
+    if not name:
+        await update.message.reply_text("Tên thư mục không hợp lệ.")
+        return
+
+    folder_id = db.get_or_create_folder(user.id, name)
+    context.chat_data["current_folder_id"] = folder_id
+
+    bot_username = context.bot.username
+    link = build_folder_deeplink(bot_username, folder_id)
+
+    await update.message.reply_text(
+        "✅ Đã chọn thư mục:\n"
+        f"📂 Tên: <b>{name}</b>\n"
+        f"🆔 ID: <code>{folder_id}</code>\n\n"
+        f"🔗 Link thư mục: {link}\n\n"
+        "Giờ bạn có thể dùng /upload để up file vào thư mục này.",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+    user = update.effective_user
+
+    folders = db.get_folders_by_owner(user.id)
+    if not folders:
+        await update.message.reply_text("Bạn chưa có thư mục nào. Dùng /folder để tạo.")
+        return
+
+    bot_username = context.bot.username
+    lines = ["📂 Các thư mục của bạn:\n"]
+    for f in folders:
+        link = build_folder_deeplink(bot_username, f["id"])
+        lines.append(
+            f"• <b>{f['name']}</b> (ID: <code>{f['id']}</code>)\n  Link: {link}"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    current_folder_id = context.chat_data.get("current_folder_id")
+    if not current_folder_id:
+        await update.message.reply_text(
+            "Bạn chưa chọn thư mục nào.\n"
+            "Dùng /folder <tên> để tạo hoặc chọn thư mục trước.",
+        )
+        return
+
+    folder = db.get_folder_by_id(current_folder_id)
+    if not folder:
+        await update.message.reply_text("Thư mục hiện tại không tồn tại (có thể đã xoá).")
+        return
+
+    bot_username = context.bot.username
+    link = build_folder_deeplink(bot_username, current_folder_id)
+
+    await update.message.reply_text(
+        "📂 Thư mục hiện tại:\n"
+        f"Tên: <b>{folder['name']}</b>\n"
+        f"ID: <code>{folder['id']}</code>\n\n"
+        f"🔗 Link thư mục: {link}",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await register_user(update)
+    user = update.effective_user
+
+    if not context.args:
+        await update.message.reply_text(
+            "Dùng: <code>/searchfolder tu_khoa</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    keyword = " ".join(context.args).strip()
+    folders = db.search_folders(user.id, keyword)
+    if not folders:
+        await update.message.reply_text("Không tìm thấy thư mục nào khớp.")
+        return
+
+    bot_username = context.bot.username
+    lines = [f"Kết quả tìm thư mục với từ khóa <b>{keyword}</b>:\n"]
+    for f in folders:
+        link = build_folder_deeplink(bot_username, f["id"])
+        lines.append(
+            f"• <b>{f['name']}</b> (ID: <code>{f['id']}</code>)\n  Link: {link}"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+# ---------------------- FILE HANDLERS --------------------------- #
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.chat_data.get("waiting_upload"):
+        return
+
+    doc = update.message.document
+    file_db_id = await save_file_to_db(
+        update,
+        context,
+        file_obj=doc,
+        file_type="document",
+        filename_hint=doc.file_name,
+        file_unique_id=doc.file_unique_id,
+        file_id=doc.file_id,
+        file_size=doc.file_size,
+        mime_type=doc.mime_type,
+    )
+
+    if file_db_id:
+        context.chat_data["waiting_upload"] = False
+        await update.message.reply_text(
+            f"✅ File đã được lưu với ID: {file_db_id}\n"
+            "👉 Gõ /getlink để lấy link chia sẻ.",
+        )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.chat_data.get("waiting_upload"):
+        return
+
+    photo = update.message.photo[-1]
+    file_db_id = await save_file_to_db(
+        update,
+        context,
+        file_obj=photo,
+        file_type="photo",
+        filename_hint=None,
+        file_unique_id=photo.file_unique_id,
+        file_id=photo.file_id,
+        file_size=photo.file_size,
+        mime_type=None,
+    )
+
+    if file_db_id:
+        context.chat_data["waiting_upload"] = False
+        await update.message.reply_text(
+            f"✅ Ảnh đã được lưu với ID: {file_db_id}\n"
+            "👉 Gõ /getlink để lấy link.",
+        )
+
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.chat_data.get("waiting_upload"):
+        return
+
+    video = update.message.video
+    file_db_id = await save_file_to_db(
+        update,
+        context,
+        file_obj=video,
+        file_type="video",
+        filename_hint=video.file_name,
+        file_unique_id=video.file_unique_id,
+        file_id=video.file_id,
+        file_size=video.file_size,
+        mime_type=video.mime_type,
+    )
+
+    if file_db_id:
+        context.chat_data["waiting_upload"] = False
+        await update.message.reply_text(
+            f"✅ Video đã được lưu với ID: {file_db_id}\n"
+            "👉 Gõ /getlink để lấy link.",
+        )
+
+
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.chat_data.get("waiting_upload"):
+        return
+
+    audio = update.message.audio
+    file_db_id = await save_file_to_db(
+        update,
+        context,
+        file_obj=audio,
+        file_type="audio",
+        filename_hint=audio.file_name,
+        file_unique_id=audio.file_unique_id,
+        file_id=audio.file_id,
+        file_size=audio.file_size,
+        mime_type=audio.mime_type,
+    )
+
+    if file_db_id:
+        context.chat_data["waiting_upload"] = False
+        await update.message.reply_text(
+            f"✅ Audio đã được lưu với ID: {file_db_id}\n"
+            "👉 Gõ /getlink để lấy link.",
+        )
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.chat_data.get("waiting_upload"):
+        return
+
+    voice = update.message.voice
+    file_db_id = await save_file_to_db(
+        update,
+        context,
+        file_obj=voice,
+        file_type="voice",
+        filename_hint=None,
+        file_unique_id=voice.file_unique_id,
+        file_id=voice.file_id,
+        file_size=voice.file_size,
+        mime_type=None,
+    )
+
+    if file_db_id:
+        context.chat_data["waiting_upload"] = False
+        await update.message.reply_text(
+            f"✅ Voice đã được lưu với ID: {file_db_id}\n"
+            "👉 Gõ /getlink để lấy link.",
+        )
+
+
+async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (update.message.text or "").lower().strip()
+    if msg in ("hi", "hello", "chào", "alo"):
+        await update.message.reply_text(
+            "Chào bạn 👋\n"
+            "Dùng: /upload → gửi 1 file → /getlink để lấy link file\n"
+            "Hoặc: /folder <tên> → /upload → /folderlink.\n"
+            "Toàn bộ dữ liệu lưu trong 1 file: files.db",
+        )
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+
+# ---------------------- MAIN --------------------------- #
+
+
+def main():
+    if not TOKEN:
+        print("❌ Thiếu Token trong .env (biến Token).")
+        return
+
+    db.init_db()
+    print(Fore.GREEN + f"DB file: files.db  ({BASE_INFO})")
+
+    app = Application.builder().token(TOKEN).build()
+
+    # command
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("me", me_command))
+    app.add_handler(CommandHandler("upload", upload_command))
+    app.add_handler(CommandHandler("getlink", getlink_command))
+    app.add_handler(CommandHandler("folder", folder_command))
+    app.add_handler(CommandHandler("myfolders", myfolders_command))
+    app.add_handler(CommandHandler("folderlink", folderlink_command))
+    app.add_handler(CommandHandler("searchfolder", searchfolder_command))
+
+    # file handlers
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+    # text
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_fallback))
+
+    # error
+    app.add_error_handler(error_handler)
+
+    print(Fore.BLUE + "Bot is running..." + Fore.GREEN)
+    app.run_polling(poll_interval=10)
+
+
+if __name__ == "__main__":
+    main()
