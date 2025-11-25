@@ -360,7 +360,8 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Bấm nút /upload bên dưới hoặc gõ /upload cũng được.\n"
         "▶ Sau đó dùng nút 📎 của Telegram để chọn file (có thể chọn nhiều hình/video).\n"
-        "📌 Mỗi file gửi xong bot sẽ tự gửi link cho bạn copy.",
+        "📌 Nếu bạn đã chọn thư mục bằng /folder, mọi file sẽ được lưu vào thư mục đó.\n"
+        "📌 Mỗi file gửi xong bot sẽ gửi link (hoặc link thư mục) cho bạn copy.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard(),
     )
@@ -650,18 +651,41 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=doc.mime_type,
     )
 
-    if file_db_id:
+    if not file_db_id:
+        return
+
+    current_folder_id = context.chat_data.get("current_folder_id")
+
+    # Nếu đang trong thư mục → chỉ trả link thư mục
+    if current_folder_id:
+        folder = db.get_folder_by_id(current_folder_id)
+        folder_name = folder["name"] if folder else "không rõ"
+
         bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
+        folder_link = build_folder_deeplink(bot_username, current_folder_id)
+
         await update.message.reply_text(
-            "✅ File đã được lưu!\n"
-            f"🆔 ID: <code>{file_db_id}</code>\n"
-            f"🔗 Link: {link}\n\n"
-            "Bạn có thể copy link này để chia sẻ.\n"
-            "Hoặc gõ /getlink để lấy lại link file gần nhất.",
+            "✅ File đã được lưu vào thư mục:\n"
+            f"📂 <b>{folder_name}</b> (ID: <code>{current_folder_id}</code>)\n\n"
+            f"🔗 Link thư mục: {folder_link}\n"
+            "Bạn chỉ cần dùng link thư mục để chia sẻ tất cả file bên trong.",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
+        return
+
+    # Không có thư mục → trả link file như bình thường
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ File đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}\n\n"
+        "Bạn có thể copy link này để chia sẻ.\n"
+        "Hoặc gõ /getlink để lấy lại link file gần nhất.",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -681,16 +705,37 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=None,
     )
 
-    if file_db_id:
+    if not file_db_id:
+        return
+
+    current_folder_id = context.chat_data.get("current_folder_id")
+
+    if current_folder_id:
+        folder = db.get_folder_by_id(current_folder_id)
+        folder_name = folder["name"] if folder else "không rõ"
+
         bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
+        folder_link = build_folder_deeplink(bot_username, current_folder_id)
+
         await update.message.reply_text(
-            "✅ Ảnh đã được lưu!\n"
-            f"🆔 ID: <code>{file_db_id}</code>\n"
-            f"🔗 Link: {link}",
+            "✅ Ảnh đã được lưu vào thư mục:\n"
+            f"📂 <b>{folder_name}</b> (ID: <code>{current_folder_id}</code>)\n\n"
+            f"🔗 Link thư mục: {folder_link}\n"
+            "Bạn chỉ cần dùng link thư mục để chia sẻ tất cả file bên trong.",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Ảnh đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -710,16 +755,37 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=video.mime_type,
     )
 
-    if file_db_id:
+    if not file_db_id:
+        return
+
+    current_folder_id = context.chat_data.get("current_folder_id")
+
+    if current_folder_id:
+        folder = db.get_folder_by_id(current_folder_id)
+        folder_name = folder["name"] if folder else "không rõ"
+
         bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
+        folder_link = build_folder_deeplink(bot_username, current_folder_id)
+
         await update.message.reply_text(
-            "✅ Video đã được lưu!\n"
-            f"🆔 ID: <code>{file_db_id}</code>\n"
-            f"🔗 Link: {link}",
+            "✅ Video đã được lưu vào thư mục:\n"
+            f"📂 <b>{folder_name}</b> (ID: <code>{current_folder_id}</code>)\n\n"
+            f"🔗 Link thư mục: {folder_link}\n"
+            "Bạn chỉ cần dùng link thư mục để chia sẻ tất cả video bên trong.",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Video đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -739,16 +805,37 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=audio.mime_type,
     )
 
-    if file_db_id:
+    if not file_db_id:
+        return
+
+    current_folder_id = context.chat_data.get("current_folder_id")
+
+    if current_folder_id:
+        folder = db.get_folder_by_id(current_folder_id)
+        folder_name = folder["name"] if folder else "không rõ"
+
         bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
+        folder_link = build_folder_deeplink(bot_username, current_folder_id)
+
         await update.message.reply_text(
-            "✅ Audio đã được lưu!\n"
-            f"🆔 ID: <code>{file_db_id}</code>\n"
-            f"🔗 Link: {link}",
+            "✅ Audio đã được lưu vào thư mục:\n"
+            f"📂 <b>{folder_name}</b> (ID: <code>{current_folder_id}</code>)\n\n"
+            f"🔗 Link thư mục: {folder_link}\n"
+            "Bạn chỉ cần dùng link thư mục để chia sẻ tất cả file bên trong.",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Audio đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -768,16 +855,37 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=None,
     )
 
-    if file_db_id:
+    if not file_db_id:
+        return
+
+    current_folder_id = context.chat_data.get("current_folder_id")
+
+    if current_folder_id:
+        folder = db.get_folder_by_id(current_folder_id)
+        folder_name = folder["name"] if folder else "không rõ"
+
         bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
+        folder_link = build_folder_deeplink(bot_username, current_folder_id)
+
         await update.message.reply_text(
-            "✅ Voice đã được lưu!\n"
-            f"🆔 ID: <code>{file_db_id}</code>\n"
-            f"🔗 Link: {link}",
+            "✅ Voice đã được lưu vào thư mục:\n"
+            f"📂 <b>{folder_name}</b> (ID: <code>{current_folder_id}</code>)\n\n"
+            f"🔗 Link thư mục: {folder_link}\n"
+            "Bạn chỉ cần dùng link thư mục để chia sẻ tất cả file bên trong.",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Voice đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
