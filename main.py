@@ -6,7 +6,11 @@ from io import BytesIO
 from dotenv import load_dotenv
 from colorama import Fore
 
-from telegram import Update
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -36,6 +40,15 @@ def sanitize_filename(name: str) -> str:
     """Làm sạch tên file."""
     name = os.path.basename(name)
     return name.replace("\n", "_").replace("\r", "_")
+
+
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Bàn phím phía dưới màn hình (giống hình bạn gửi):
+    | /upload | /getlink |
+    """
+    keyboard = [[KeyboardButton("/upload"), KeyboardButton("/getlink")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 async def register_user(update: Update):
@@ -138,7 +151,6 @@ async def save_file_to_db(
         mime_type=mime_type,
     )
 
-    # ghi lại ID file cuối cùng (không bắt buộc, nhưng có thể dùng sau này)
     context.chat_data["last_file_db_id"] = file_db_id
     return file_db_id
 
@@ -238,7 +250,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Muốn sắp xếp theo thư mục: /folder &lt;tên&gt; → gửi file → /folderlink.\n\n"
         "Bot là bot kín, admin phải /approve ID thì mới upload / tạo thư mục được."
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),  # hiện 2 nút /upload /getlink
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,7 +265,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 /me - Xem ID + username Telegram\n\n"
         "📤 UPLOAD:\n"
         "🔹 Gửi file trực tiếp cho bot rồi gõ /getlink\n"
-        "🔹 /upload - Chỉ để nhắc cách dùng (không bắt buộc nữa)\n\n"
+        "🔹 /upload - Hiện bàn phím /upload + /getlink và nhắc cách dùng\n\n"
         "📁 THƯ MỤC:\n"
         "🔹 /folder <tên> - Tạo hoặc chọn thư mục\n"
         "🔹 /myfolders - Xem thư mục của bạn\n"
@@ -260,6 +276,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 /block TELEGRAM_ID   - Chặn user dùng bot\n\n"
         "💾 Toàn bộ dữ liệu + file lưu trong 1 file: files.db",
         parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -271,7 +288,9 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Username: <code>{user.username or 'không có'}</code>\n\n"
         "Dùng ID này để admin /approve cho bạn hoặc set OWNER_ID cho bot."
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=get_main_keyboard()
+    )
 
 
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -283,6 +302,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Hãy gửi 1 file (document / ảnh / video / audio) cho bot.\n"
         "Sau đó gõ /getlink để nhận link chia sẻ.",
         parse_mode="HTML",
+        reply_markup=get_main_keyboard(),  # hiện 2 nút như bot mẫu
     )
 
 
@@ -297,6 +317,7 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Bạn chưa upload file nào.\n"
             "Hãy gửi 1 file cho bot (hoặc gõ /upload rồi gửi file) trước.",
+            reply_markup=get_main_keyboard(),
         )
         return
 
@@ -308,6 +329,7 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔗 Link tải file gần nhất của bạn:\n"
         f"{link}\n\n"
         "Gửi link này cho người khác, họ bấm Start bot sẽ nhận được file.",
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -326,12 +348,16 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Dùng: <code>/folder ten_thu_muc</code>\n"
             "Ví dụ: <code>/folder phim2025</code>",
             parse_mode="HTML",
+            reply_markup=get_main_keyboard(),
         )
         return
 
     name = " ".join(context.args).strip()
     if not name:
-        await update.message.reply_text("Tên thư mục không hợp lệ.")
+        await update.message.reply_text(
+            "Tên thư mục không hợp lệ.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     folder_id = db.get_or_create_folder(user.id, name)
@@ -348,6 +374,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Giờ bạn có thể gửi file để up vào thư mục này.",
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -360,7 +387,10 @@ async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     folders = db.get_folders_by_owner(user.id)
     if not folders:
-        await update.message.reply_text("Bạn chưa có thư mục nào. Dùng /folder để tạo.")
+        await update.message.reply_text(
+            "Bạn chưa có thư mục nào. Dùng /folder để tạo.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     bot_username = context.bot.username
@@ -375,6 +405,7 @@ async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -388,12 +419,16 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             "Bạn chưa chọn thư mục nào.\n"
             "Dùng /folder <tên> để tạo hoặc chọn thư mục trước.",
+            reply_markup=get_main_keyboard(),
         )
         return
 
     folder = db.get_folder_by_id(current_folder_id)
     if not folder:
-        await update.message.reply_text("Thư mục hiện tại không tồn tại (có thể đã xoá).")
+        await update.message.reply_text(
+            "Thư mục hiện tại không tồn tại (có thể đã xoá).",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     bot_username = context.bot.username
@@ -406,6 +441,7 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🔗 Link thư mục: {link}",
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -420,13 +456,17 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             "Dùng: <code>/searchfolder tu_khoa</code>",
             parse_mode="HTML",
+            reply_markup=get_main_keyboard(),
         )
         return
 
     keyword = " ".join(context.args).strip()
     folders = db.search_folders(user.id, keyword)
     if not folders:
-        await update.message.reply_text("Không tìm thấy thư mục nào khớp.")
+        await update.message.reply_text(
+            "Không tìm thấy thư mục nào khớp.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     bot_username = context.bot.username
@@ -441,6 +481,7 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -450,24 +491,34 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user is None or user.id != OWNER_ID:
-        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
+        await update.message.reply_text(
+            "❌ Bạn không có quyền dùng lệnh này.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     if not context.args:
         await update.message.reply_text(
             "Dùng: <code>/approve TELEGRAM_ID</code>",
             parse_mode="HTML",
+            reply_markup=get_main_keyboard(),
         )
         return
 
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("ID không hợp lệ.")
+        await update.message.reply_text(
+            "ID không hợp lệ.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     db.set_user_approved(target_id, True)
-    await update.message.reply_text(f"✅ Đã duyệt user {target_id} dùng bot.")
+    await update.message.reply_text(
+        f"✅ Đã duyệt user {target_id} dùng bot.",
+        reply_markup=get_main_keyboard(),
+    )
 
     try:
         await context.bot.send_message(
@@ -481,24 +532,34 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user is None or user.id != OWNER_ID:
-        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
+        await update.message.reply_text(
+            "❌ Bạn không có quyền dùng lệnh này.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     if not context.args:
         await update.message.reply_text(
             "Dùng: <code>/block TELEGRAM_ID</code>",
             parse_mode="HTML",
+            reply_markup=get_main_keyboard(),
         )
         return
 
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("ID không hợp lệ.")
+        await update.message.reply_text(
+            "ID không hợp lệ.",
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     db.set_user_approved(target_id, False)
-    await update.message.reply_text(f"⛔ Đã chặn user {target_id} dùng bot.")
+    await update.message.reply_text(
+        f"⛔ Đã chặn user {target_id} dùng bot.",
+        reply_markup=get_main_keyboard(),
+    )
 
     try:
         await context.bot.send_message(
@@ -533,6 +594,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ File đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link chia sẻ.",
+            reply_markup=get_main_keyboard(),
         )
 
 
@@ -557,6 +619,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Ảnh đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
+            reply_markup=get_main_keyboard(),
         )
 
 
@@ -581,6 +644,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Video đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
+            reply_markup=get_main_keyboard(),
         )
 
 
@@ -605,6 +669,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Audio đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
+            reply_markup=get_main_keyboard(),
         )
 
 
@@ -629,6 +694,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Voice đã được lưu với ID: {file_db_id}\n"
             "👉 Gõ /getlink để lấy link.",
+            reply_markup=get_main_keyboard(),
         )
 
 
@@ -640,6 +706,7 @@ async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Gửi file cho bot rồi gõ /getlink để lấy link.\n"
             "Muốn sắp xếp theo thư mục: /folder <tên> → gửi file → /folderlink.\n"
             "Bot kín: admin phải /approve ID mới upload được.",
+            reply_markup=get_main_keyboard(),
         )
 
 
