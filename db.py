@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path("files.db")
+DB_PATH = Path("storage_v3.db")
 
 
 def get_conn():
@@ -279,3 +279,4 @@ def get_last_file_by_owner(owner_telegram_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+
