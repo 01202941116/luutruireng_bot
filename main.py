@@ -571,6 +571,69 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------------- FILE HANDLERS --------------------------- #
 
+async def add_file_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE, file_db_id: int, label: str):
+    """
+    Gom các file thuộc cùng một media_group_id (album) lại,
+    rồi JobQueue sẽ gửi 1 tin duy nhất sau khi nhóm upload xong.
+    """
+    media_group_id = update.message.media_group_id
+    if not media_group_id:
+        return  # không phải album
+
+    chat_id = update.effective_chat.id
+    groups = context.chat_data.setdefault("media_groups", {})
+    group = groups.get(media_group_id)
+
+    if not group:
+        group = {"files": [], "job": None}
+        groups[media_group_id] = group
+
+    group["files"].append((file_db_id, label))
+
+    # nếu đã có job cũ thì huỷ, để dồn lại
+    if group.get("job"):
+        group["job"].schedule_removal()
+
+    # sau 2 giây không có file mới cùng group nữa thì gửi 1 tin
+    job = context.application.job_queue.run_once(
+        send_group_links_job,
+        when=2,
+        chat_id=chat_id,
+        data={"media_group_id": media_group_id},
+    )
+    group["job"] = job
+
+
+async def send_group_links_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    JobQueue callback: gửi 1 tin chứa tất cả link trong 1 media_group.
+    """
+    job = context.job
+    chat_id = job.chat_id
+    media_group_id = job.data["media_group_id"]
+
+    groups = context.chat_data.get("media_groups", {})
+    group = groups.pop(media_group_id, None)
+
+    if not group or not group["files"]:
+        return
+
+    bot_username = context.bot.username
+
+    lines = ["✅ Đã lưu nhóm file:"]
+    for file_db_id, label in group["files"]:
+        link = build_file_deeplink(bot_username, file_db_id)
+        # label có thể là tên file hoặc loại file
+        lines.append(f"• {label}: {link}")
+
+    text = "\n".join(lines)
+    await context.bot.send_message(
+        chat_id,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
+
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update, context):
@@ -589,18 +652,27 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=doc.mime_type,
     )
 
-    if file_db_id:
-        bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
-        await update.message.reply_text(
-            "✅ File đã được lưu!\\n"
-            f"🆔 ID: <code>{file_db_id}</code>\\n"
-            f"🔗 Link: {link}\\n\\n"
-            "Bạn có thể copy link này để chia sẻ.\\n"
-            "Hoặc gõ /getlink để lấy lại link file gần nhất.",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(),
-        )
+    if not file_db_id:
+        return
+
+    # Nếu là album (nhiều file gửi 1 lần) -> gom lại, không gửi từng link
+    if update.message.media_group_id:
+        label = f"Tài liệu ID <code>{file_db_id}</code>"
+        await add_file_to_group(update, context, file_db_id, label)
+        return
+
+    # File lẻ -> gửi link ngay
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ File đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}\n\n"
+        "Bạn có thể copy link này để chia sẻ.\n"
+        "Hoặc gõ /getlink để lấy lại link file gần nhất.",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -620,16 +692,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=None,
     )
 
-    if file_db_id:
-        bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
-        await update.message.reply_text(
-            "✅ Ảnh đã được lưu!\\n"
-            f"🆔 ID: <code>{file_db_id}</code>\\n"
-            f"🔗 Link: {link}",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(),
-        )
+    if not file_db_id:
+        return
+
+    if update.message.media_group_id:
+        label = f"Ảnh ID <code>{file_db_id}</code>"
+        await add_file_to_group(update, context, file_db_id, label)
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Ảnh đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -649,16 +728,23 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=video.mime_type,
     )
 
-    if file_db_id:
-        bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
-        await update.message.reply_text(
-            "✅ Video đã được lưu!\\n"
-            f"🆔 ID: <code>{file_db_id}</code>\\n"
-            f"🔗 Link: {link}",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(),
-        )
+    if not file_db_id:
+        return
+
+    if update.message.media_group_id:
+        label = f"Video ID <code>{file_db_id}</code>"
+        await add_file_to_group(update, context, file_db_id, label)
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Video đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -678,16 +764,23 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=audio.mime_type,
     )
 
-    if file_db_id:
-        bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
-        await update.message.reply_text(
-            "✅ Audio đã được lưu!\\n"
-            f"🆔 ID: <code>{file_db_id}</code>\\n"
-            f"🔗 Link: {link}",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(),
-        )
+    if not file_db_id:
+        return
+
+    if update.message.media_group_id:
+        label = f"Audio ID <code>{file_db_id}</code>"
+        await add_file_to_group(update, context, file_db_id, label)
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Audio đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -707,16 +800,23 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mime_type=None,
     )
 
-    if file_db_id:
-        bot_username = context.bot.username
-        link = build_file_deeplink(bot_username, file_db_id)
-        await update.message.reply_text(
-            "✅ Voice đã được lưu!\\n"
-            f"🆔 ID: <code>{file_db_id}</code>\\n"
-            f"🔗 Link: {link}",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(),
-        )
+    if not file_db_id:
+        return
+
+    if update.message.media_group_id:
+        label = f"Voice ID <code>{file_db_id}</code>"
+        await add_file_to_group(update, context, file_db_id, label)
+        return
+
+    bot_username = context.bot.username
+    link = build_file_deeplink(bot_username, file_db_id)
+    await update.message.reply_text(
+        "✅ Voice đã được lưu!\n"
+        f"🆔 ID: <code>{file_db_id}</code>\n"
+        f"🔗 Link: {link}",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
