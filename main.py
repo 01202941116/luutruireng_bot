@@ -120,7 +120,6 @@ async def save_file_to_db(
     mime_type: str | None = None,
 ):
     """Tải file vào RAM, lưu BLOB vào DB, trả về file_db_id."""
-
     user = update.effective_user
     if user is None:
         await update.message.reply_text("Lỗi: không lấy được thông tin user.")
@@ -246,7 +245,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🤖 Bot lưu trữ file kiểu game offline (tất cả nằm trong 1 file <code>files.db</code>).\n\n"
         "📤 Cách dùng nhanh:\n"
-        "• Gửi 1 file cho bot → gõ /getlink để lấy link.\n"
+        "• Gửi 1 file cho bot → bot trả link luôn.\n"
         "• Muốn sắp xếp theo thư mục: /folder &lt;tên&gt; → gửi file → /folderlink.\n\n"
         "Bot là bot kín, admin phải /approve ID thì mới upload / tạo thư mục được."
     )
@@ -264,7 +263,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 /help - Xem lại hướng dẫn\n"
         "🔹 /me - Xem ID + username Telegram\n\n"
         "📤 UPLOAD:\n"
-        "🔹 Gửi file trực tiếp cho bot rồi gõ /getlink\n"
+        "🔹 Gửi file trực tiếp cho bot, bot tự trả link.\n"
         "🔹 /upload - Hiện bàn phím /upload + /getlink và nhắc cách dùng\n\n"
         "📁 THƯ MỤC:\n"
         "🔹 /folder <tên> - Tạo hoặc chọn thư mục\n"
@@ -274,7 +273,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👑 ADMIN (OWNER):\n"
         "🔹 /approve TELEGRAM_ID - Duyệt user dùng bot\n"
         "🔹 /block TELEGRAM_ID   - Chặn user dùng bot\n\n"
-        "💾 Toàn bộ dữ liệu + file lưu trong 1 file: files.db",
+        "💾 Toàn bộ dữ liệu + file lưu trong 1 file SQLite.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard(),
     )
@@ -299,10 +298,11 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "✅ Hãy gửi 1 file (document / ảnh / video / audio) cho bot.\n"
-        "Sau đó gõ /getlink để nhận link chia sẻ.",
+        "✅ Bấm nút /upload bên dưới hoặc gõ /upload cũng được.\n"
+        "▶ Sau đó dùng nút 📎 của Telegram để chọn file (có thể chọn nhiều hình/video).\n"
+        "📌 Mỗi file gửi xong bot sẽ tự gửi link cho bạn copy.",
         parse_mode="HTML",
-        reply_markup=get_main_keyboard(),  # hiện 2 nút như bot mẫu
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -591,9 +591,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
+        bot_username = context.bot.username
+        link = build_file_deeplink(bot_username, file_db_id)
+
         await update.message.reply_text(
-            f"✅ File đã được lưu với ID: {file_db_id}\n"
-            "👉 Gõ /getlink để lấy link chia sẻ.",
+            "✅ File đã được lưu!\n"
+            f"🆔 ID: <code>{file_db_id}</code>\n"
+            f"🔗 Link: {link}\n\n"
+            "Bạn có thể copy link này để chia sẻ.\n"
+            "Hoặc gõ /getlink để lấy lại link file gần nhất.",
+            parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
 
@@ -616,9 +623,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
+        bot_username = context.bot.username
+        link = build_file_deeplink(bot_username, file_db_id)
+
         await update.message.reply_text(
-            f"✅ Ảnh đã được lưu với ID: {file_db_id}\n"
-            "👉 Gõ /getlink để lấy link.",
+            "✅ Ảnh đã được lưu!\n"
+            f"🆔 ID: <code>{file_db_id}</code>\n"
+            f"🔗 Link: {link}",
+            parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
 
@@ -641,9 +653,14 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
+        bot_username = context.bot.username
+        link = build_file_deeplink(bot_username, file_db_id)
+
         await update.message.reply_text(
-            f"✅ Video đã được lưu với ID: {file_db_id}\n"
-            "👉 Gõ /getlink để lấy link.",
+            "✅ Video đã được lưu!\n"
+            f"🆔 ID: <code>{file_db_id}</code>\n"
+            f"🔗 Link: {link}",
+            parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
 
@@ -666,9 +683,14 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
+        bot_username = context.bot.username
+        link = build_file_deeplink(bot_username, file_db_id)
+
         await update.message.reply_text(
-            f"✅ Audio đã được lưu với ID: {file_db_id}\n"
-            "👉 Gõ /getlink để lấy link.",
+            "✅ Audio đã được lưu!\n"
+            f"🆔 ID: <code>{file_db_id}</code>\n"
+            f"🔗 Link: {link}",
+            parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
 
@@ -691,9 +713,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if file_db_id:
+        bot_username = context.bot.username
+        link = build_file_deeplink(bot_username, file_db_id)
+
         await update.message.reply_text(
-            f"✅ Voice đã được lưu với ID: {file_db_id}\n"
-            "👉 Gõ /getlink để lấy link.",
+            "✅ Voice đã được lưu!\n"
+            f"🆔 ID: <code>{file_db_id}</code>\n"
+            f"🔗 Link: {link}",
+            parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
 
@@ -703,7 +730,7 @@ async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg in ("hi", "hello", "chào", "alo"):
         await update.message.reply_text(
             "Chào bạn 👋\n"
-            "Gửi file cho bot rồi gõ /getlink để lấy link.\n"
+            "Gửi file cho bot, bot sẽ trả link để bạn copy.\n"
             "Muốn sắp xếp theo thư mục: /folder <tên> → gửi file → /folderlink.\n"
             "Bot kín: admin phải /approve ID mới upload được.",
             reply_markup=get_main_keyboard(),
@@ -723,7 +750,7 @@ def main():
         return
 
     db.init_db()
-    print(Fore.GREEN + "DB file: files.db (lưu tất cả trong 1 file)")
+    print(Fore.GREEN + "DB SQLite đã được khởi tạo.")
 
     app = Application.builder().token(TOKEN).build()
 
