@@ -1,4 +1,3 @@
-
 import os
 import logging
 from datetime import datetime
@@ -233,7 +232,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for f in files[:50]:
                 link = build_file_deeplink(bot_username, f["id"])
                 fname = f["filename"] or f"file_{f['id']}"
-                
+                lines.append(f"• <a href=\"{link}\">{fname}</a>")
 
             await update.message.reply_text(
                 "\\n".join(lines),
