@@ -174,7 +174,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args:
         param = args[0]
 
-        # Xem file (cho phép cả người chưa được duyệt – chỉ xem được khi có link)
+        # Xem trực tiếp 1 file
         if param.startswith("file"):
             try:
                 file_db_id = int(param[4:])
@@ -187,23 +187,49 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Không tìm thấy file (có thể đã bị xoá).")
                 return
 
-            blob = row["file_blob"]
-            if blob is None:
-                await update.message.reply_text("Dữ liệu file không tồn tại.")
-                return
-
-            bio = BytesIO(blob)
+            file_type = row["file_type"]
+            file_id = row["file_id"]
             fname = row["filename"] or "file"
-            bio.name = fname
 
-            await update.message.reply_document(
-                document=bio,
-                filename=fname,
-                caption=f"📁 File ID: {file_db_id}",
+            caption = (
+                f"📁 File: <b>{fname}</b>\n"
+                f"ID: <code>{file_db_id}</code>"
             )
+
+            # Gửi thẳng file bằng file_id
+            if file_type == "video":
+                await update.message.reply_video(
+                    file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            elif file_type == "photo":
+                await update.message.reply_photo(
+                    file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            elif file_type == "audio":
+                await update.message.reply_audio(
+                    file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            elif file_type == "voice":
+                await update.message.reply_voice(
+                    file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_document(
+                    file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
             return
 
-        # Xem thư mục
+        # Xem thư mục: gửi thẳng tất cả file trong thư mục
         if param.startswith("folder"):
             try:
                 folder_id = int(param[6:])
@@ -224,21 +250,56 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            bot_username = context.bot.username
-            lines = [
-                f"📂 Thư mục: <b>{folder['name']}</b>\n",
-                "Danh sách file:",
-            ]
-            for f in files[:50]:
-                link = build_file_deeplink(bot_username, f["id"])
-                fname = f["filename"] or f"file_{f['id']}"
-                lines.append(f"• <a href=\"{link}\">{fname}</a>")
-
+            # Gửi 1 tin tiêu đề thư mục
             await update.message.reply_text(
-                "\n".join(lines),
+                f"📂 Thư mục: <b>{folder['name']}</b>\n"
+                f"Số file: <b>{len(files)}</b>\n"
+                "Bot sẽ gửi lần lượt các file bên dưới:",
                 parse_mode="HTML",
-                disable_web_page_preview=True,
             )
+
+            # Gửi từng file trực tiếp để người xem xem/tải luôn
+            for f in files[:50]:
+                file_type = f["file_type"]
+                file_id = f["file_id"]
+                fname = f["filename"] or f"file_{f['id']}"
+
+                caption = f"{fname}\nID: <code>{f['id']}</code>"
+
+                try:
+                    if file_type == "video":
+                        await update.message.reply_video(
+                            file_id,
+                            caption=caption,
+                            parse_mode="HTML",
+                        )
+                    elif file_type == "photo":
+                        await update.message.reply_photo(
+                            file_id,
+                            caption=caption,
+                            parse_mode="HTML",
+                        )
+                    elif file_type == "audio":
+                        await update.message.reply_audio(
+                            file_id,
+                            caption=caption,
+                            parse_mode="HTML",
+                        )
+                    elif file_type == "voice":
+                        await update.message.reply_voice(
+                            file_id,
+                            caption=caption,
+                            parse_mode="HTML",
+                        )
+                    else:
+                        await update.message.reply_document(
+                            file_id,
+                            caption=caption,
+                            parse_mode="HTML",
+                        )
+                except Exception as e:
+                    logger.error(f"Lỗi gửi file trong thư mục: {e}")
+
             return
 
     # /start bình thường
@@ -246,7 +307,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 Bot lưu trữ file, tất cả nằm trong 1 file SQLite.\n\n"
         "📤 Cách dùng nhanh:\n"
         "• Gửi 1 file cho bot → bot trả link luôn.\n"
-        "• Muốn sắp xếp theo thư mục: /folder &lt;tên&gt; → gửi file → /folderlink.\n\n"
+        "• Muốn sắp xếp theo thư mục: /folder <tên> → gửi file → /folderlink.\n\n"
         "Bot là bot kín, admin phải /approve ID thì mới upload / tạo thư mục được."
     )
     await update.message.reply_text(
