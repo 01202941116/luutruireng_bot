@@ -16,7 +16,6 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     Filters,
-    CallbackContext,
 )
 
 import db
@@ -821,11 +820,11 @@ def main():
     db.init_db()
     print(Fore.GREEN + "DB SQLite đã được khởi tạo.")
 
-    # Updater kiểu cũ – rất ổn định
+    # Updater kiểu v13
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Command
+    # Command handlers
     dp.add_handler(CommandHandler("start", start_command))
     dp.add_handler(CommandHandler("help", help_command))
     dp.add_handler(CommandHandler("me", me_command))
@@ -847,9 +846,6 @@ def main():
 
     # Text
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_fallback))
-
-    # Error
-    dp.add_error_handler(error_handler)
 
     print(Fore.BLUE + "Bot is running..." + Fore.GREEN)
     updater.start_polling()
