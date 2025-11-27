@@ -881,8 +881,7 @@ def main():
     db.init_db()
     print(Fore.GREEN + "DB SQLite đã được khởi tạo.")
 
-    # updater(None) để không dùng Updater cũ, tránh lỗi AttributeError
-    app = Application.builder().token(TOKEN).updater(None).build()
+    app = Application.builder().token(TOKEN).build()
 
     # Command handlers
     app.add_handler(CommandHandler("start", start_command))
@@ -911,7 +910,7 @@ def main():
     app.add_error_handler(error_handler)
 
     print(Fore.BLUE + "Bot is running..." + Fore.GREEN)
-    app.run_polling(poll_interval=10)
+    app.run_polling()       # ❗ KHÔNG truyền poll_interval ở đây
 
 
 if __name__ == "__main__":
