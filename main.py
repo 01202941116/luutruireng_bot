@@ -12,10 +12,11 @@ from telegram import (
     KeyboardButton,
 )
 from telegram.ext import (
-    Updater,
+    Application,
     CommandHandler,
     MessageHandler,
-    Filters,
+    CallbackContext,   # THÊM DÒNG NÀY
+    filters,
 )
 
 import db
