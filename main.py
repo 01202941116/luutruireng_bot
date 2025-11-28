@@ -52,7 +52,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-async def register_user(update: Update):
+def register_user(update: Update):
     """Lưu user vào DB."""
     user = update.effective_user
     if user is None:
@@ -65,7 +65,7 @@ async def register_user(update: Update):
     )
 
 
-async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+def check_access(update: Update, context: CallbackContext) -> bool:
     """
     Bot kín: chỉ user đã được OWNER duyệt mới được dùng các lệnh lưu trữ.
     /start, /help, /me vẫn dùng được để xem hướng dẫn.
@@ -85,7 +85,7 @@ async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
         return True
 
     # Chưa được duyệt
-    await message.reply_text(
+    message.reply_text(
         "🔒 Đây là bot kín.\n"
         "Bạn chưa được admin duyệt sử dụng.\n"
         "Vui lòng chờ admin kiểm tra và mở quyền."
@@ -94,7 +94,7 @@ async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
     # Gửi thông báo tới owner (nếu có)
     if OWNER_ID:
         try:
-            await context.bot.send_message(
+            context.bot.send_message(
                 OWNER_ID,
                 (
                     "🔔 Có người xin sử dụng bot:\n"
@@ -111,9 +111,9 @@ async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
     return False
 
 
-async def save_file_to_db(
+def save_file_to_db(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: CallbackContext,
     file_obj,
     file_type: str,
     filename_hint: str | None,
@@ -128,10 +128,10 @@ async def save_file_to_db(
 
     if user is None or message is None:
         if message:
-            await message.reply_text("Lỗi: không lấy được thông tin user.")
+            message.reply_text("Lỗi: không lấy được thông tin user.")
         return None
 
-    await register_user(update)
+    register_user(update)
 
     # current_folder_id lưu trong context.chat_data
     chat_data = context.chat_data
@@ -143,9 +143,9 @@ async def save_file_to_db(
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{file_type}_{file_unique_id}_{ts}"
 
-    # tải file từ Telegram (async)
-    tg_file = await file_obj.get_file()
-    file_bytes = await tg_file.download_as_bytearray()
+    # tải file từ Telegram
+    tg_file = file_obj.get_file()
+    file_bytes = tg_file.download_as_bytearray()
 
     file_db_id = db.insert_file(
         owner_telegram_id=user.id,
@@ -174,8 +174,8 @@ def build_folder_deeplink(bot_username: str, folder_id: int) -> str:
 # ---------------------- COMMAND HANDLERS --------------------------- #
 
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
+def start_command(update: Update, context: CallbackContext):
+    register_user(update)
 
     args = context.args or []
     message = update.message
@@ -191,24 +191,24 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 file_db_id = int(param[4:])
             except ValueError:
-                await message.reply_text("Link file không hợp lệ.")
+                message.reply_text("Link file không hợp lệ.")
                 return
 
             row = db.get_file_by_id(file_db_id)
             if not row:
-                await message.reply_text("Không tìm thấy file (có thể đã bị xoá).")
+                message.reply_text("Không tìm thấy file (có thể đã bị xoá).")
                 return
 
             blob = row["file_blob"]
             if blob is None:
-                await message.reply_text("Dữ liệu file không tồn tại.")
+                message.reply_text("Dữ liệu file không tồn tại.")
                 return
 
             bio = BytesIO(blob)
             fname = row["filename"] or "file"
             bio.name = fname
 
-            await message.reply_document(
+            message.reply_document(
                 document=bio,
                 filename=fname,
                 caption=f"📁 File ID: {file_db_id}",
@@ -220,17 +220,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 folder_id = int(param[6:])
             except ValueError:
-                await message.reply_text("Link thư mục không hợp lệ.")
+                message.reply_text("Link thư mục không hợp lệ.")
                 return
 
             folder = db.get_folder_by_id(folder_id)
             if not folder:
-                await message.reply_text("Không tìm thấy thư mục (có thể đã xoá).")
+                message.reply_text("Không tìm thấy thư mục (có thể đã xoá).")
                 return
 
             files = db.get_files_by_folder(folder_id)
             if not files:
-                await message.reply_text(
+                message.reply_text(
                     f"📂 Thư mục <b>{folder['name']}</b> hiện chưa có file nào.",
                     parse_mode="HTML",
                 )
@@ -246,7 +246,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fname = f["filename"] or f"file_{f['id']}"
                 lines.append(f"• <a href=\"{link}\">{fname}</a>")
 
-            await message.reply_text(
+            message.reply_text(
                 "\n".join(lines),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
@@ -261,19 +261,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Muốn sắp xếp theo thư mục: /folder <tên> → gửi file → /folderlink.\n\n"
         "Bot là bot kín, admin phải /approve ID thì mới upload / tạo thư mục được."
     )
-    await message.reply_text(
+    message.reply_text(
         text,
         parse_mode="HTML",
         reply_markup=get_main_keyboard(),
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def help_command(update: Update, context: CallbackContext):
     message = update.message
     if message is None:
         return
 
-    await message.reply_text(
+    message.reply_text(
         "📚 Lệnh bot:\n\n"
         "🔹 /start - Bắt đầu / xem hướng dẫn\n"
         "🔹 /help - Xem lại hướng dẫn\n"
@@ -294,7 +294,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def me_command(update: Update, context: CallbackContext):
     user = update.effective_user
     message = update.message
     if message is None or user is None:
@@ -306,21 +306,21 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Username: <code>{user.username or 'không có'}</code>\n\n"
         "Dùng ID này để admin /approve cho bạn hoặc set OWNER_ID cho bot."
     )
-    await message.reply_text(
+    message.reply_text(
         text, parse_mode="HTML", reply_markup=get_main_keyboard()
     )
 
 
-async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    if not await check_access(update, context):
+def upload_command(update: Update, context: CallbackContext):
+    register_user(update)
+    if not check_access(update, context):
         return
 
     message = update.message
     if message is None:
         return
 
-    await message.reply_text(
+    message.reply_text(
         "✅ Bạn cứ gửi file cho bot (dùng nút 📎 để chọn file / ảnh / video ...).\n"
         "📌 Mỗi file gửi xong bot sẽ tự gửi link cho bạn copy.",
         parse_mode="HTML",
@@ -328,9 +328,9 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    if not await check_access(update, context):
+def getlink_command(update: Update, context: CallbackContext):
+    register_user(update)
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -340,7 +340,7 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     row = db.get_last_file_by_owner(user.id)
     if not row:
-        await message.reply_text(
+        message.reply_text(
             "❌ Bạn chưa upload file nào.\n"
             "Hãy gửi 1 file cho bot (hoặc gõ /upload rồi gửi file) trước.",
             reply_markup=get_main_keyboard(),
@@ -351,7 +351,7 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username
     link = build_file_deeplink(bot_username, file_db_id)
 
-    await message.reply_text(
+    message.reply_text(
         "🔗 Link tải file gần nhất của bạn:\n"
         f"{link}\n\n"
         "Gửi link này cho người khác, họ bấm Start bot sẽ nhận được file.",
@@ -362,9 +362,9 @@ async def getlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- FOLDER COMMANDS ---------- #
 
 
-async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    if not await check_access(update, context):
+def folder_command(update: Update, context: CallbackContext):
+    register_user(update)
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -375,7 +375,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
 
     if not args:
-        await message.reply_text(
+        message.reply_text(
             "Dùng: <code>/folder ten_thu_muc</code>\n"
             "Ví dụ: <code>/folder phim2025</code>",
             parse_mode="HTML",
@@ -385,7 +385,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     name = " ".join(args).strip()
     if not name:
-        await message.reply_text(
+        message.reply_text(
             "Tên thư mục không hợp lệ.",
             reply_markup=get_main_keyboard(),
         )
@@ -397,7 +397,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username
     link = build_folder_deeplink(bot_username, folder_id)
 
-    await message.reply_text(
+    message.reply_text(
         "✅ Đã chọn thư mục:\n"
         f"📂 Tên: <b>{name}</b>\n"
         f"🆔 ID: <code>{folder_id}</code>\n\n"
@@ -409,9 +409,9 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    if not await check_access(update, context):
+def myfolders_command(update: Update, context: CallbackContext):
+    register_user(update)
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -422,7 +422,7 @@ async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     folders = db.get_folders_by_owner(user.id)
     if not folders:
-        await message.reply_text(
+        message.reply_text(
             "Bạn chưa có thư mục nào. Dùng /folder để tạo.",
             reply_markup=get_main_keyboard(),
         )
@@ -436,7 +436,7 @@ async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• <b>{f['name']}</b> (ID: <code>{f['id']}</code>)\n  Link: {link}"
         )
 
-    await message.reply_text(
+    message.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -444,9 +444,9 @@ async def myfolders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    if not await check_access(update, context):
+def folderlink_command(update: Update, context: CallbackContext):
+    register_user(update)
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -455,7 +455,7 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     current_folder_id = context.chat_data.get("current_folder_id")
     if not current_folder_id:
-        await message.reply_text(
+        message.reply_text(
             "Bạn chưa chọn thư mục nào.\n"
             "Dùng /folder <tên> để tạo hoặc chọn thư mục trước.",
             reply_markup=get_main_keyboard(),
@@ -464,7 +464,7 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     folder = db.get_folder_by_id(current_folder_id)
     if not folder:
-        await message.reply_text(
+        message.reply_text(
             "Thư mục hiện tại không tồn tại (có thể đã xoá).",
             reply_markup=get_main_keyboard(),
         )
@@ -473,7 +473,7 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     bot_username = context.bot.username
     link = build_folder_deeplink(bot_username, current_folder_id)
 
-    await message.reply_text(
+    message.reply_text(
         "📂 Thư mục hiện tại:\n"
         f"Tên: <b>{folder['name']}</b>\n"
         f"ID: <code>{folder['id']}</code>\n\n"
@@ -484,9 +484,9 @@ async def folderlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    if not await check_access(update, context):
+def searchfolder_command(update: Update, context: CallbackContext):
+    register_user(update)
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -497,7 +497,7 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
     args = context.args or []
 
     if not args:
-        await message.reply_text(
+        message.reply_text(
             "Dùng: <code>/searchfolder tu_khoa</code>",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
@@ -507,7 +507,7 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
     keyword = " ".join(args).strip()
     folders = db.search_folders(user.id, keyword)
     if not folders:
-        await message.reply_text(
+        message.reply_text(
             "Không tìm thấy thư mục nào khớp.",
             reply_markup=get_main_keyboard(),
         )
@@ -521,7 +521,7 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
             f"• <b>{f['name']}</b> (ID: <code>{f['id']}</code>)\n  Link: {link}"
         )
 
-    await message.reply_text(
+    message.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -532,12 +532,12 @@ async def searchfolder_command(update: Update, context: ContextTypes.DEFAULT_TYP
 # ---------- ADMIN COMMANDS (OWNER) ---------- #
 
 
-async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def approve_command(update: Update, context: CallbackContext):
     message = update.message
     user = update.effective_user
     if message is None or user is None or user.id != OWNER_ID:
         if message:
-            await message.reply_text(
+            message.reply_text(
                 "❌ Bạn không có quyền dùng lệnh này.",
                 reply_markup=get_main_keyboard(),
             )
@@ -545,7 +545,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args or []
     if not args:
-        await message.reply_text(
+        message.reply_text(
             "Dùng: <code>/approve TELEGRAM_ID</code>",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
@@ -555,20 +555,20 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(args[0])
     except ValueError:
-        await message.reply_text(
+        message.reply_text(
             "ID không hợp lệ.",
             reply_markup=get_main_keyboard(),
         )
         return
 
     db.set_user_approved(target_id, True)
-    await message.reply_text(
+    message.reply_text(
         f"✅ Đã duyệt user {target_id} dùng bot.",
         reply_markup=get_main_keyboard(),
     )
 
     try:
-        await context.bot.send_message(
+        context.bot.send_message(
             target_id,
             "✅ Admin đã duyệt cho bạn sử dụng bot. Bạn có thể dùng /upload, /folder...",
         )
@@ -576,12 +576,12 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
-async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def block_command(update: Update, context: CallbackContext):
     message = update.message
     user = update.effective_user
     if message is None or user is None or user.id != OWNER_ID:
         if message:
-            await message.reply_text(
+            message.reply_text(
                 "❌ Bạn không có quyền dùng lệnh này.",
                 reply_markup=get_main_keyboard(),
             )
@@ -589,7 +589,7 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args or []
     if not args:
-        await message.reply_text(
+        message.reply_text(
             "Dùng: <code>/block TELEGRAM_ID</code>",
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
@@ -599,20 +599,20 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(args[0])
     except ValueError:
-        await message.reply_text(
+        message.reply_text(
             "ID không hợp lệ.",
             reply_markup=get_main_keyboard(),
         )
         return
 
     db.set_user_approved(target_id, False)
-    await message.reply_text(
+    message.reply_text(
         f"⛔ Đã chặn user {target_id} dùng bot.",
         reply_markup=get_main_keyboard(),
     )
 
     try:
-        await context.bot.send_message(
+        context.bot.send_message(
             target_id,
             "⛔ Admin đã chặn quyền sử dụng bot của bạn.",
         )
@@ -623,8 +623,8 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------- FILE HANDLERS --------------------------- #
 
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update, context):
+def handle_document(update: Update, context: CallbackContext):
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -632,7 +632,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     doc = message.document
-    file_db_id = await save_file_to_db(
+    file_db_id = save_file_to_db(
         update,
         context,
         file_obj=doc,
@@ -647,7 +647,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_db_id:
         bot_username = context.bot.username
         link = build_file_deeplink(bot_username, file_db_id)
-        await message.reply_text(
+        message.reply_text(
             "✅ File đã được lưu!\n"
             f"🆔 ID: <code>{file_db_id}</code>\n"
             f"🔗 Link: {link}\n\n"
@@ -658,8 +658,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update, context):
+def handle_photo(update: Update, context: CallbackContext):
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -667,7 +667,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     photo = message.photo[-1]
-    file_db_id = await save_file_to_db(
+    file_db_id = save_file_to_db(
         update,
         context,
         file_obj=photo,
@@ -682,7 +682,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_db_id:
         bot_username = context.bot.username
         link = build_file_deeplink(bot_username, file_db_id)
-        await message.reply_text(
+        message.reply_text(
             "✅ Ảnh đã được lưu!\n"
             f"🆔 ID: <code>{file_db_id}</code>\n"
             f"🔗 Link: {link}",
@@ -691,8 +691,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update, context):
+def handle_video(update: Update, context: CallbackContext):
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -700,7 +700,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     video = message.video
-    file_db_id = await save_file_to_db(
+    file_db_id = save_file_to_db(
         update,
         context,
         file_obj=video,
@@ -715,7 +715,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_db_id:
         bot_username = context.bot.username
         link = build_file_deeplink(bot_username, file_db_id)
-        await message.reply_text(
+        message.reply_text(
             "✅ Video đã được lưu!\n"
             f"🆔 ID: <code>{file_db_id}</code>\n"
             f"🔗 Link: {link}",
@@ -724,8 +724,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update, context):
+def handle_audio(update: Update, context: CallbackContext):
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -733,7 +733,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     audio = message.audio
-    file_db_id = await save_file_to_db(
+    file_db_id = save_file_to_db(
         update,
         context,
         file_obj=audio,
@@ -748,7 +748,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_db_id:
         bot_username = context.bot.username
         link = build_file_deeplink(bot_username, file_db_id)
-        await message.reply_text(
+        message.reply_text(
             "✅ Audio đã được lưu!\n"
             f"🆔 ID: <code>{file_db_id}</code>\n"
             f"🔗 Link: {link}",
@@ -757,8 +757,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update, context):
+def handle_voice(update: Update, context: CallbackContext):
+    if not check_access(update, context):
         return
 
     message = update.message
@@ -766,7 +766,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     voice = message.voice
-    file_db_id = await save_file_to_db(
+    file_db_id = save_file_to_db(
         update,
         context,
         file_obj=voice,
@@ -781,7 +781,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_db_id:
         bot_username = context.bot.username
         link = build_file_deeplink(bot_username, file_db_id)
-        await message.reply_text(
+        message.reply_text(
             "✅ Voice đã được lưu!\n"
             f"🆔 ID: <code>{file_db_id}</code>\n"
             f"🔗 Link: {link}",
@@ -790,14 +790,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def text_fallback(update: Update, context: CallbackContext):
     message = update.message
     if message is None or not message.text:
         return
 
     msg = message.text.lower().strip()
     if msg in ("hi", "hello", "chào", "alo"):
-        await message.reply_text(
+        message.reply_text(
             "Chào bạn 👋\n"
             "Gửi file cho bot, bot sẽ trả link để bạn copy.\n"
             "Muốn sắp xếp theo thư mục: /folder <tên> → gửi file → /folderlink.\n"
@@ -806,7 +806,7 @@ async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+def error_handler(update: object, context: CallbackContext):
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 
@@ -821,42 +821,39 @@ def main():
     db.init_db()
     print(Fore.GREEN + "DB SQLite đã được khởi tạo.")
 
-    application = Application.builder().token(TOKEN).build()
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     # Command handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("me", me_command))
-    application.add_handler(CommandHandler("upload", upload_command))
-    application.add_handler(CommandHandler("getlink", getlink_command))
-
-    # Folder commands
-    application.add_handler(CommandHandler("folder", folder_command))
-    application.add_handler(CommandHandler("myfolders", myfolders_command))
-    application.add_handler(CommandHandler("folderlink", folderlink_command))
-    application.add_handler(CommandHandler("searchfolder", searchfolder_command))
-
-    # Admin
-    application.add_handler(CommandHandler("approve", approve_command))
-    application.add_handler(CommandHandler("block", block_command))
+    dp.add_handler(CommandHandler("start", start_command))
+    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("me", me_command))
+    dp.add_handler(CommandHandler("upload", upload_command))
+    dp.add_handler(CommandHandler("getlink", getlink_command))
+    dp.add_handler(CommandHandler("folder", folder_command))
+    dp.add_handler(CommandHandler("myfolders", myfolders_command))
+    dp.add_handler(CommandHandler("folderlink", folderlink_command))
+    dp.add_handler(CommandHandler("searchfolder", searchfolder_command))
+    dp.add_handler(CommandHandler("approve", approve_command))
+    dp.add_handler(CommandHandler("block", block_command))
 
     # File handlers
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    dp.add_handler(MessageHandler(Filters.document, handle_document))
+    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
+    dp.add_handler(MessageHandler(Filters.video, handle_video))
+    dp.add_handler(MessageHandler(Filters.audio, handle_audio))
+    dp.add_handler(MessageHandler(Filters.voice, handle_voice))
 
     # Text
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_fallback)
+    dp.add_handler(
+        MessageHandler(Filters.text & ~Filters.command, text_fallback)
     )
 
-    # Error
-    application.add_error_handler(error_handler)
+    dp.add_error_handler(error_handler)
 
     print(Fore.BLUE + "Bot is running..." + Fore.GREEN)
-    application.run_polling(poll_interval=10)
+    updater.start_polling()
+    updater.idle()
 
 
 if __name__ == "__main__":
