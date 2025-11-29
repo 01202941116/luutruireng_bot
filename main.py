@@ -25,8 +25,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-APP_VERSION = "v5-mediagroup"  # phiên bản mới: share theo lố 3 file
-MEDIA_GROUP_SIZE = 3           # muốn 10 cái 1 lần thì đổi số này thành 10
+# phiên bản mới: share dạng album + hiện tên thư mục
+APP_VERSION = "v5-mediagroup-folder-name"
+MEDIA_GROUP_SIZE = 3  # muốn 10 cái 1 lần thì đổi thành 10
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -226,6 +227,15 @@ def list_folders(owner_id):
     return rows
 
 
+def get_folder_by_id(folder_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
 def save_file(owner_id, folder_id, file_unique_id, file_id,
               file_name, file_type, file_size, mime_type):
     conn = get_conn()
@@ -370,16 +380,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Link chia sẻ không hợp lệ.")
                 return
 
+            # Lấy tên thư mục
+            folder = get_folder_by_id(folder_id)
+            folder_name = folder["name"] if folder else "Không tên"
+
             files = get_files_of_owner(owner_id, folder_id=folder_id, limit=30)
             if not files:
                 await update.message.reply_text(
-                    "📂 Thư mục này chưa có file.",
+                    f"📂 Thư mục *{folder_name}* chưa có file.",
                     reply_markup=get_main_keyboard(),
+                    parse_mode="Markdown",
                 )
                 return
 
             await update.message.reply_text(
-                "📂 *Danh sách file được chia sẻ:* (tối đa 30 file mới nhất)\n"
+                f"📂 *Thư mục được chia sẻ:* {folder_name}\n"
+                f"(tối đa 30 file mới nhất)\n"
                 f"Bot sẽ gửi file theo lố {MEDIA_GROUP_SIZE} cái một lần.",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(),
@@ -409,7 +425,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     batch.append(media)
                     count_in_batch += 1
 
-                    # đủ lố thì gửi
+                    # đủ lố thì gửi media group
                     if count_in_batch >= MEDIA_GROUP_SIZE:
                         try:
                             await context.bot.send_media_group(
@@ -444,7 +460,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         batch = []
                         count_in_batch = 0
                 else:
-                    # loại file không nằm trong media group -> gửi riêng
+                    # loại file không support media group
                     try:
                         await context.bot.send_message(
                             chat_id=chat_id,
@@ -453,7 +469,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception as e:
                         logger.exception("Lỗi khi gửi message loại không hỗ trợ: %s", e)
 
-            # gửi phần còn lại (nếu chưa đủ lố nhưng vẫn còn file)
+            # gửi phần còn lại (nếu chưa đủ lố)
             if batch:
                 try:
                     await context.bot.send_media_group(
