@@ -335,8 +335,14 @@ WELCOME_TEXT = (
 
 # ========================= HANDLERS =========================
 
-async def debug_cmd(update, context):
-    await update.message.reply_text(f"BOT_USERNAME đang dùng: {BOT_USERNAME}")
+# Debug để kiểm tra username
+async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    real_username = context.bot.username  # username thật Telegram trả về
+    await update.message.reply_text(
+        "DEBUG INFO:\n"
+        f"- BOT_USERNAME (env): {BOT_USERNAME}\n"
+        f"- bot.username (thật): {real_username}"
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -485,21 +491,22 @@ async def myfiles_cmd(update, context):
     )
 
 
-async def getlink_cmd(update, context):
+async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     folder = ensure_current_folder(user.id)
 
-    # Generate token
     token = get_share_token(user.id, folder["id"])
 
-    # FIX CHUẨN LINK 100%
-    link = f"https://t.me/{BOT_USERNAME}?start=share_{token}"
+    # ❗ DÙ BOT_USERNAME TRÊN ENV CÓ SAI THÌ VẪN LẤY ĐÚNG Ở ĐÂY
+    real_username = context.bot.username  # ví dụ: 'luutruireng_bot'
+
+    link = f"https://t.me/{real_username}?start=share_{token}"
 
     await update.message.reply_text(
-        f"🔗 *Link chia sẻ thư mục {folder['name']}:*\n"
+        f"🔗 Link chia sẻ thư mục *{folder['name']}*:\n"
         f"{link}",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
