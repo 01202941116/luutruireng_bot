@@ -14,16 +14,9 @@ from telegram.ext import (
 )
 
 # ----------------- CONFIG -----------------
-# Railway: có thể dùng BOT_TOKEN hoặc Token
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
-
-# Username bot KHÔNG có @, ví dụ: luutruireng_bot
 BOT_USERNAME = os.getenv("BOT_USERNAME", "YOUR_BOT_USERNAME")
-
-# File SQLite để lưu dữ liệu
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
-
-# ID Telegram của bạn (admin) – không bắt buộc
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 logging.basicConfig(
@@ -32,8 +25,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Lưu những user đang ở chế độ upload
+# User đang ở chế độ upload
 UPLOAD_MODE_USERS = set()
+# User đang được yêu cầu nhập tên thư mục mới
+FOLDER_NAME_WAIT_USERS = set()
 
 
 # ----------------- KEYBOARD -----------------
@@ -56,7 +51,6 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Người dùng
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -69,7 +63,6 @@ def init_db():
         """
     )
 
-    # Thư mục
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS folders (
@@ -81,7 +74,6 @@ def init_db():
         """
     )
 
-    # Thư mục hiện tại của từng user
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS user_current_folder (
@@ -93,7 +85,6 @@ def init_db():
         """
     )
 
-    # File
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS files (
@@ -111,7 +102,6 @@ def init_db():
         """
     )
 
-    # Token chia sẻ cho từng thư mục
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS share_tokens (
@@ -189,7 +179,6 @@ def create_or_get_folder(owner_id, name):
 def set_current_folder(owner_id, folder_id):
     conn = get_conn()
     cur = conn.cursor()
-    # upsert theo owner_telegram_id
     cur.execute(
         """
         INSERT INTO user_current_folder (owner_telegram_id, folder_id, updated_at)
@@ -222,13 +211,9 @@ def get_current_folder(owner_id):
 
 
 def ensure_current_folder(owner_id):
-    """Luôn đảm bảo user có thư mục hiện tại.
-       Nếu chưa có thì tạo thư mục 'Mặc định' và chọn nó.
-    """
     folder = get_current_folder(owner_id)
     if folder:
         return folder
-
     folder = create_or_get_folder(owner_id, "Mặc định")
     set_current_folder(owner_id, folder["id"])
     return folder
@@ -262,7 +247,6 @@ def save_file(
 ):
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute(
         """
         INSERT OR IGNORE INTO files
@@ -359,7 +343,7 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
     return rows
 
 
-# ----------------- TEXT HƯỚNG DẪN -----------------
+# ----------------- TEXT -----------------
 WELCOME_TEXT = (
     "Những điều bot có thể làm?\n\n"
     "• Lưu trữ hình ảnh, video, tài liệu, file bất kỳ.\n"
@@ -381,7 +365,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args:
         arg = args[0]
-        # /start share_xxx
         if arg.startswith("share_"):
             token = arg[len("share_") :]
             owner_id, folder_id = get_owner_and_folder_by_token(token)
@@ -425,7 +408,6 @@ async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
 
     UPLOAD_MODE_USERS.add(user.id)
-
     await update.message.reply_text(
         f"✅ Đang ở thư mục: {folder['name']}\n"
         "Bây giờ hãy gửi hình ảnh / video / tài liệu... cho bot.\n"
@@ -435,29 +417,49 @@ async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def new_folder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Khi bấm nút '📁 Tạo thư mục mới':
-       → tạo folder mới + chọn nó + bật luôn chế độ upload.
-    """
+    """Khi bấm nút 📁 Tạo thư mục mới → yêu cầu nhập tên thư mục."""
     user = update.effective_user
     get_or_create_user(user)
 
-    folder_name = datetime.now().strftime("Thư mục %Y-%m-%d %H:%M:%S")
-    folder = create_or_get_folder(user.id, folder_name)
-    set_current_folder(user.id, folder["id"])
-
-    UPLOAD_MODE_USERS.add(user.id)
+    FOLDER_NAME_WAIT_USERS.add(user.id)
 
     await update.message.reply_text(
-        f"📁 Đã tạo thư mục mới: *{folder_name}*\n"
-        "Thư mục này đang được chọn.\n\n"
-        "✅ Bạn đang ở chế độ upload, hãy gửi file cho bot.",
+        "✏️ Hãy nhập *tên thư mục mới* bạn muốn tạo.\n"
+        "Ví dụ: `Ảnh gia đình`, `Karaoke 2025`...",
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown",
     )
 
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý text thường: nếu user đang ở trạng thái nhập tên thư mục thì tạo thư mục."""
+    user = update.effective_user
+    text = update.message.text.strip()
+
+    # Nếu đang chờ tên thư mục
+    if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
+        FOLDER_NAME_WAIT_USERS.remove(user.id)
+        get_or_create_user(user)
+
+        folder_name = text
+        folder = create_or_get_folder(user.id, folder_name)
+        set_current_folder(user.id, folder["id"])
+        UPLOAD_MODE_USERS.add(user.id)
+
+        await update.message.reply_text(
+            f"📁 Đã tạo / chọn thư mục: *{folder_name}*\n"
+            "✅ Đang ở chế độ upload, hãy gửi file cho bot.",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
+
+    # Không phải trường hợp đặt tên thư mục → bỏ qua (hoặc có thể nhắc nhẹ)
+    # Ở đây mình cho im lặng để tránh spam.
+    return
+
+
 async def setfolder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh nâng cao: /setfolder tên_thư_mục (tự đặt tên thư mục)."""
     user = update.effective_user
     get_or_create_user(user)
 
@@ -570,7 +572,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user)
 
-    # Đảm bảo đã có thư mục hiện tại
     folder = ensure_current_folder(user.id)
 
     if user.id not in UPLOAD_MODE_USERS:
@@ -603,11 +604,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif message.audio:
         file_obj = message.audio
         file_type = "audio"
-        file_name = file_obj.file_name or "audio.mp3"
+        file_name = message.audio.file_name or "audio.mp3"
         file_size = file_obj.file_size
         mime_type = file_obj.mime_type
     else:
-        return  # không phải file thì bỏ qua
+        return
 
     file_unique_id = file_obj.file_unique_id
     file_id = file_obj.file_id
@@ -659,11 +660,19 @@ def main():
     app.add_handler(CommandHandler("folders", folders_cmd))
     app.add_handler(CommandHandler("setfolder", setfolder_cmd))
 
-    # Nút "📁 Tạo thư mục mới"
+    # Nút tạo thư mục mới
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.Regex("^📁 Tạo thư mục mới$"),
             new_folder_button,
+        )
+    )
+
+    # Text thường (để nhập tên thư mục)
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text,
         )
     )
 
