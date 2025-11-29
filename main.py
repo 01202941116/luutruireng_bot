@@ -3,7 +3,14 @@ import os
 import sqlite3
 import secrets
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InputMediaVideo,
+    InputMediaPhoto,
+    InputMediaDocument,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,7 +25,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-APP_VERSION = "v4-sharefiles"  # phiên bản mới: gửi file khi mở link share
+APP_VERSION = "v5-mediagroup"  # phiên bản mới: share theo lố 3 file
+MEDIA_GROUP_SIZE = 3           # muốn 10 cái 1 lần thì đổi số này thành 10
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -346,7 +354,7 @@ async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /start
-    - Nếu có arg share_xxx: gửi lại file trong thư mục chia sẻ cho user.
+    - Nếu có arg share_xxx: gửi lại file theo lố (media group) cho user.
     - Nếu không: hiển thị màn hình chào.
     """
     user = update.effective_user
@@ -372,57 +380,110 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text(
                 "📂 *Danh sách file được chia sẻ:* (tối đa 30 file mới nhất)\n"
-                "Bot sẽ gửi từng file bên dưới.",
+                f"Bot sẽ gửi file theo lố {MEDIA_GROUP_SIZE} cái một lần.",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(),
             )
 
             chat_id = update.effective_chat.id
 
+            batch = []
+            count_in_batch = 0
+
             for f in files:
                 file_type = f["file_type"]
                 file_id = f["file_id"]
                 file_name = f["file_name"]
                 file_size = f["file_size"]
-
                 caption = f"{file_name} — {file_size} bytes"
 
-                try:
-                    if file_type == "video":
-                        await context.bot.send_video(
-                            chat_id=chat_id,
-                            video=file_id,
-                            caption=caption,
-                        )
-                    elif file_type == "photo":
-                        await context.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=file_id,
-                            caption=caption,
-                        )
-                    elif file_type == "document":
-                        await context.bot.send_document(
-                            chat_id=chat_id,
-                            document=file_id,
-                            caption=caption,
-                        )
-                    elif file_type == "audio":
-                        await context.bot.send_audio(
-                            chat_id=chat_id,
-                            audio=file_id,
-                            caption=caption,
-                        )
-                    else:
+                media = None
+                if file_type == "video":
+                    media = InputMediaVideo(media=file_id, caption=caption)
+                elif file_type == "photo":
+                    media = InputMediaPhoto(media=file_id, caption=caption)
+                elif file_type == "document":
+                    media = InputMediaDocument(media=file_id, caption=caption)
+
+                if media:
+                    batch.append(media)
+                    count_in_batch += 1
+
+                    # đủ lố thì gửi
+                    if count_in_batch >= MEDIA_GROUP_SIZE:
+                        try:
+                            await context.bot.send_media_group(
+                                chat_id=chat_id,
+                                media=batch,
+                            )
+                        except Exception as e:
+                            logger.exception("Lỗi khi gửi media group: %s", e)
+                            # fallback: gửi từng cái
+                            for m in batch:
+                                try:
+                                    if isinstance(m, InputMediaVideo):
+                                        await context.bot.send_video(
+                                            chat_id=chat_id,
+                                            video=m.media,
+                                            caption=m.caption,
+                                        )
+                                    elif isinstance(m, InputMediaPhoto):
+                                        await context.bot.send_photo(
+                                            chat_id=chat_id,
+                                            photo=m.media,
+                                            caption=m.caption,
+                                        )
+                                    elif isinstance(m, InputMediaDocument):
+                                        await context.bot.send_document(
+                                            chat_id=chat_id,
+                                            document=m.media,
+                                            caption=m.caption,
+                                        )
+                                except Exception as e2:
+                                    logger.exception("Lỗi khi gửi từng media: %s", e2)
+                        batch = []
+                        count_in_batch = 0
+                else:
+                    # loại file không nằm trong media group -> gửi riêng
+                    try:
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=f"Không gửi được file: {caption} (loại không hỗ trợ: {file_type})",
+                            text=f"Không gửi được trong album: {caption} (loại: {file_type})",
                         )
-                except Exception as e:
-                    logger.exception("Lỗi khi gửi file chia sẻ: %s", e)
-                    await context.bot.send_message(
+                    except Exception as e:
+                        logger.exception("Lỗi khi gửi message loại không hỗ trợ: %s", e)
+
+            # gửi phần còn lại (nếu chưa đủ lố nhưng vẫn còn file)
+            if batch:
+                try:
+                    await context.bot.send_media_group(
                         chat_id=chat_id,
-                        text=f"⚠️ Lỗi khi gửi file: {caption}",
+                        media=batch,
                     )
+                except Exception as e:
+                    logger.exception("Lỗi khi gửi media group cuối: %s", e)
+                    for m in batch:
+                        try:
+                            if isinstance(m, InputMediaVideo):
+                                await context.bot.send_video(
+                                    chat_id=chat_id,
+                                    video=m.media,
+                                    caption=m.caption,
+                                )
+                            elif isinstance(m, InputMediaPhoto):
+                                await context.bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=m.media,
+                                    caption=m.caption,
+                                )
+                            elif isinstance(m, InputMediaDocument):
+                                await context.bot.send_document(
+                                    chat_id=chat_id,
+                                    document=m.media,
+                                    caption=m.caption,
+                                )
+                        except Exception as e2:
+                            logger.exception("Lỗi khi gửi từng media (batch cuối): %s", e2)
 
             return  # kết thúc nhánh share_
 
@@ -460,7 +521,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
-    # Người dùng đang nhập tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -555,7 +615,6 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
 
-    # Username cố định cho chắc
     real_username = "luutruireng_bot"
     link = f"https://t.me/{real_username}?start=share_{token}"
 
