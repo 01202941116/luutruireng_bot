@@ -25,8 +25,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# phiên bản mới: share dạng album + hiện tên thư mục + mật khẩu
-APP_VERSION = "v6-mediagroup-folder-pass"
+# phiên bản mới: share dạng album + tên thư mục + mật khẩu + whitelist
+APP_VERSION = "v7-mediagroup-folder-pass-whitelist"
 MEDIA_GROUP_SIZE = 3  # muốn 10 cái 1 lần thì đổi thành 10
 
 logging.basicConfig(
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 UPLOAD_MODE_USERS = set()
 FOLDER_NAME_WAIT_USERS = set()
-# user_id -> (owner_id, folder_id) đang chờ nhập mật khẩu
+# user_id -> (owner_id, folder_id) đang chờ nhập mật khẩu khi mở link share_
 PASS_WAIT_USERS = {}
 
 
@@ -123,9 +123,19 @@ def init_db():
         )
     """)
 
+    # bảng whitelist user được phép dùng bot
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS allowed_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER UNIQUE,
+            added_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
-    logger.info("Database OK (có cột password).")
+    logger.info("Database OK (có password + whitelist).")
 
 
 def get_or_create_user(tg_user):
@@ -353,6 +363,67 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
     return rows
 
 
+# ============ WHITELIST ============
+
+def is_user_allowed(user_id: int) -> bool:
+    """Cho phép OWNER luôn, còn lại phải có trong allowed_users."""
+    if OWNER_ID and user_id == OWNER_ID:
+        return True
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM allowed_users WHERE telegram_id = ?",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
+def add_allowed_user(user_id: int, added_by: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO allowed_users (telegram_id, added_by)
+        VALUES (?, ?)
+        """,
+        (user_id, added_by),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def ensure_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Kiểm tra quyền dùng bot. Trả về True nếu OK, False nếu bị chặn."""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    # cho OWNER dùng luôn
+    if OWNER_ID and user.id == OWNER_ID:
+        return True
+
+    if is_user_allowed(user.id):
+        return True
+
+    # người lạ → thông báo ID cho họ gửi admin
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🔒 Bot riêng tư, chỉ người được duyệt mới sử dụng.\n"
+                f"ID Telegram của bạn: `{user.id}`\n"
+                "Gửi ID này cho admin để được cấp quyền."
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.exception("Lỗi gửi thông báo không có quyền: %s", e)
+
+    return False
+
+
 # ========================= TEXT =========================
 
 WELCOME_TEXT = (
@@ -362,8 +433,8 @@ WELCOME_TEXT = (
     "👉 Bấm *📁 Tạo thư mục mới* để tạo thư mục.\n"
     "👉 Dùng /upload để gửi file.\n"
     "👉 Dùng /getlink để lấy link chia sẻ.\n"
-    "👉 Dùng /setpass <mật khẩu> để đặt mật khẩu cho thư mục hiện tại\n"
-    "   hoặc /setpass off để tắt mật khẩu.\n"
+    "👉 Dùng /setpass <mật khẩu> để đặt mật khẩu thư mục.\n"
+    "👉 Dùng /setpass off để tắt mật khẩu.\n"
 )
 
 
@@ -499,13 +570,38 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     real_username = context.bot.username
     await update.message.reply_text(
-    "Cách dùng:\n"
-    "/setpass <mật khẩu> – đặt mật khẩu cho thư mục hiện tại.\n"
-    "/setpass off – bỏ mật khẩu.\n"
-    f"Thư mục hiện tại: *{folder['name']}*",
-    reply_markup=get_main_keyboard(),
-    parse_mode="Markdown",
-)
+        "DEBUG INFO:\n"
+        f"- bot.username (thật): {real_username}\n"
+        f"- version: {APP_VERSION}"
+    )
+
+
+async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Chỉ OWNER dùng: /allow <telegram_id> để thêm người vào whitelist."""
+    user = update.effective_user
+    if OWNER_ID and user.id != OWNER_ID:
+        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Cách dùng:\n"
+            "/allow <telegram_id>\n\n"
+            "Ví dụ:\n"
+            "/allow 123456789",
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ ID không hợp lệ, phải là số.")
+        return
+
+    add_allowed_user(target_id, user.id)
+    await update.message.reply_text(
+        f"✅ Đã thêm ID {target_id} vào danh sách được phép dùng bot."
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -519,6 +615,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # reset trạng thái chờ pass nếu user gõ lại /start
     PASS_WAIT_USERS.pop(user.id, None)
+
+    # kiểm tra quyền dùng bot
+    if not await ensure_allowed(update, context):
+        return
 
     args = context.args
     if args:
@@ -543,7 +643,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 PASS_WAIT_USERS[user.id] = (owner_id, folder_id)
                 await update.message.reply_text(
                     f"🔐 Thư mục *{folder_name}* đã được đặt mật khẩu.\n"
-                    "Vui lòng nhập *mật khẩu* để xem file.",
+                    "Vui lòng nhập mật khẩu để xem file.",
                     reply_markup=get_main_keyboard(),
                     parse_mode="Markdown",
                 )
@@ -567,6 +667,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     folder = ensure_current_folder(user.id)
     UPLOAD_MODE_USERS.add(user.id)
@@ -579,16 +682,21 @@ async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def new_folder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     FOLDER_NAME_WAIT_USERS.add(user.id)
     await update.message.reply_text(
-        "✏️ Nhập *tên thư mục mới* bạn muốn tạo:",
+        "✏️ Nhập tên thư mục mới bạn muốn tạo:",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown",
     )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     text = update.message.text.strip()
 
@@ -644,6 +752,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setfolder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
 
     if not context.args:
@@ -666,19 +777,21 @@ async def setfolder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def folders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     folders = list_folders(user.id)
     cur = get_current_folder(user.id)
 
     if not folders:
         await update.message.reply_text(
-            "Bạn chưa có thư mục nào. Hãy bấm *📁 Tạo thư mục mới*.",
+            "Bạn chưa có thư mục nào. Hãy bấm 📁 Tạo thư mục mới.",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
         )
         return
 
-    lines = ["📂 *Các thư mục của bạn:*\n"]
+    lines = ["📂 Các thư mục của bạn:\n"]
     for f in folders:
         mark = "⭐" if cur and cur["id"] == f["id"] else "•"
         has_pass = " 🔐" if f["password"] else ""
@@ -687,25 +800,26 @@ async def folders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "\n".join(lines),
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown",
     )
 
 
 async def myfiles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     folder = ensure_current_folder(user.id)
     files = get_files_of_owner(user.id, folder_id=folder["id"], limit=30)
 
     if not files:
         await update.message.reply_text(
-            f"Thư mục *{folder['name']}* chưa có file nào.",
+            f"Thư mục {folder['name']} chưa có file nào.",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
         )
         return
 
     lines = [
-        f"📂 *30 file mới nhất trong thư mục {folder['name']}:*\n"
+        f"📂 30 file mới nhất trong thư mục {folder['name']}:\n"
     ]
     for f in files:
         lines.append(f"• {f['file_name']} — {f['file_size']} bytes")
@@ -713,11 +827,13 @@ async def myfiles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "\n".join(lines),
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown",
     )
 
 
 async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
@@ -740,17 +856,19 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setpass_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Đặt / tắt mật khẩu cho thư mục hiện tại."""
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     folder = ensure_current_folder(user.id)
 
     if not context.args:
         await update.message.reply_text(
             "Cách dùng:\n"
-            "/setpass <mật_khẩu> – đặt mật khẩu cho thư mục hiện tại.\n"
+            "/setpass <mật khẩu> – đặt mật khẩu cho thư mục hiện tại.\n"
             "/setpass off – bỏ mật khẩu.\n"
-            f"Thư mục hiện tại: *{folder['name']}*",
+            f"Thư mục hiện tại: {folder['name']}",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
         )
         return
 
@@ -758,20 +876,21 @@ async def setpass_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if arg.lower() in ["off", "none", "0", "bo", "bỏ"]:
         update_folder_password(folder["id"], None)
         await update.message.reply_text(
-            f"🔓 Đã *tắt mật khẩu* cho thư mục *{folder['name']}*.",
+            f"🔓 Đã tắt mật khẩu cho thư mục {folder['name']}.",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
         )
     else:
         update_folder_password(folder["id"], arg)
         await update.message.reply_text(
-            f"🔐 Đã đặt mật khẩu cho thư mục *{folder['name']}*.",
+            f"🔐 Đã đặt mật khẩu cho thư mục {folder['name']}.",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
         )
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     message = update.message
     user = update.effective_user
     folder = ensure_current_folder(user.id)
@@ -821,16 +940,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await message.reply_text(
-        f"✅ Đã lưu file vào thư mục *{folder['name']}*:\n• {file_name}",
+        f"✅ Đã lưu file vào thư mục {folder['name']}:\n• {file_name}",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown",
     )
 
 
 async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # vẫn check quyền, tránh người lạ spam
+    if not await ensure_allowed(update, context):
+        return
+
     await update.message.reply_text(
         "Lệnh không tồn tại. Hãy dùng:\n"
-        "/upload • /getlink • /myfiles • /folders • /setfolder • /setpass • /version",
+        "/upload /getlink /myfiles /folders /setfolder /setpass /version",
         reply_markup=get_main_keyboard(),
     )
 
@@ -855,6 +977,7 @@ def main():
     app.add_handler(CommandHandler("folders", folders_cmd))
     app.add_handler(CommandHandler("setfolder", setfolder_cmd))
     app.add_handler(CommandHandler("setpass", setpass_cmd))
+    app.add_handler(CommandHandler("allow", allow_cmd))
 
     app.add_handler(
         MessageHandler(
