@@ -502,8 +502,8 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
 
-    # 🔥 CHỈ DÙNG USERNAME THẬT LẤY TỪ TELEGRAM
-    real_username = context.bot.username  # ví dụ: 'luutruireng_bot'
+    # 🔥 DÙNG CỐ ĐỊNH USERNAME ĐÃ BIẾT
+    real_username = "luutruireng_bot"
 
     link = f"https://t.me/{real_username}?start=share_{token}"
 
