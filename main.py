@@ -2,7 +2,6 @@ import logging
 import os
 import sqlite3
 import secrets
-from datetime import datetime
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -16,10 +15,7 @@ from telegram.ext import (
 # ========================= CONFIG =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
-BOT_USERNAME = os.getenv("BOT_USERNAME")  # MUST HAVE on Railway
-
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
-
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 logging.basicConfig(
@@ -38,7 +34,7 @@ def get_main_keyboard():
     keyboard = [
         [KeyboardButton("📁 Tạo thư mục mới"), KeyboardButton("/upload")],
         [KeyboardButton("/getlink"), KeyboardButton("/myfiles")],
-        [KeyboardButton("/folders")]
+        [KeyboardButton("/folders")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -123,11 +119,10 @@ def get_or_create_user(tg_user):
         conn.close()
         return row
 
-    cur.execute("""
-        INSERT INTO users (telegram_id, full_name, username)
-        VALUES (?, ?, ?)
-    """, (tg_user.id, tg_user.full_name, tg_user.username))
-
+    cur.execute(
+        "INSERT INTO users (telegram_id, full_name, username) VALUES (?, ?, ?)",
+        (tg_user.id, tg_user.full_name, tg_user.username),
+    )
     conn.commit()
     cur.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_user.id,))
     row = cur.fetchone()
@@ -139,28 +134,25 @@ def create_or_get_folder(owner_id, name):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT * FROM folders
-        WHERE owner_telegram_id = ? AND name = ?
-    """, (owner_id, name))
-
+    cur.execute(
+        "SELECT * FROM folders WHERE owner_telegram_id = ? AND name = ?",
+        (owner_id, name),
+    )
     row = cur.fetchone()
     if row:
         conn.close()
         return row
 
-    cur.execute("""
-        INSERT INTO folders (owner_telegram_id, name)
-        VALUES (?, ?)
-    """, (owner_id, name))
-
+    cur.execute(
+        "INSERT INTO folders (owner_telegram_id, name) VALUES (?, ?)",
+        (owner_id, name),
+    )
     conn.commit()
 
-    cur.execute("""
-        SELECT * FROM folders
-        WHERE owner_telegram_id = ? AND name = ?
-    """, (owner_id, name))
-
+    cur.execute(
+        "SELECT * FROM folders WHERE owner_telegram_id = ? AND name = ?",
+        (owner_id, name),
+    )
     row = cur.fetchone()
     conn.close()
     return row
@@ -170,15 +162,16 @@ def set_current_folder(owner_id, folder_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         INSERT INTO user_current_folder (owner_telegram_id, folder_id, updated_at)
         VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(owner_telegram_id)
-        DO UPDATE SET
+        ON CONFLICT(owner_telegram_id) DO UPDATE SET
             folder_id = excluded.folder_id,
             updated_at = excluded.updated_at
-    """, (owner_id, folder_id))
-
+        """,
+        (owner_id, folder_id),
+    )
     conn.commit()
     conn.close()
 
@@ -187,13 +180,15 @@ def get_current_folder(owner_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         SELECT f.*
         FROM user_current_folder u
         JOIN folders f ON f.id = u.folder_id
         WHERE u.owner_telegram_id = ?
-    """, (owner_id,))
-
+        """,
+        (owner_id,),
+    )
     row = cur.fetchone()
     conn.close()
     return row
@@ -212,40 +207,37 @@ def ensure_current_folder(owner_id):
 def list_folders(owner_id):
     conn = get_conn()
     cur = conn.cursor()
-
-    cur.execute("""
-        SELECT * FROM folders
-        WHERE owner_telegram_id = ?
-        ORDER BY created_at DESC
-    """, (owner_id,))
-
+    cur.execute(
+        "SELECT * FROM folders WHERE owner_telegram_id = ? ORDER BY created_at DESC",
+        (owner_id,),
+    )
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def save_file(owner_id, folder_id, file_unique_id, file_id, file_name,
-              file_type, file_size, mime_type):
-
+def save_file(owner_id, folder_id, file_unique_id, file_id,
+              file_name, file_type, file_size, mime_type):
     conn = get_conn()
     cur = conn.cursor()
-
-    cur.execute("""
+    cur.execute(
+        """
         INSERT OR IGNORE INTO files
         (file_unique_id, file_id, owner_telegram_id, folder_id,
          file_name, file_type, file_size, mime_type)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        file_unique_id,
-        file_id,
-        owner_id,
-        folder_id,
-        file_name,
-        file_type,
-        file_size,
-        mime_type,
-    ))
-
+        """,
+        (
+            file_unique_id,
+            file_id,
+            owner_id,
+            folder_id,
+            file_name,
+            file_type,
+            file_size,
+            mime_type,
+        ),
+    )
     conn.commit()
     conn.close()
 
@@ -254,26 +246,28 @@ def get_share_token(owner_id, folder_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         SELECT token FROM share_tokens
         WHERE owner_telegram_id = ? AND folder_id = ?
-    """, (owner_id, folder_id))
-
+        """,
+        (owner_id, folder_id),
+    )
     row = cur.fetchone()
     if row:
         conn.close()
         return row["token"]
 
     token = secrets.token_urlsafe(8)
-
-    cur.execute("""
+    cur.execute(
+        """
         INSERT INTO share_tokens (owner_telegram_id, folder_id, token)
         VALUES (?, ?, ?)
-    """, (owner_id, folder_id, token))
-
+        """,
+        (owner_id, folder_id, token),
+    )
     conn.commit()
     conn.close()
-
     return token
 
 
@@ -281,66 +275,63 @@ def get_owner_and_folder_by_token(token):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT owner_telegram_id, folder_id
-        FROM share_tokens
-        WHERE token = ?
-    """, (token,))
-
+    cur.execute(
+        "SELECT owner_telegram_id, folder_id FROM share_tokens WHERE token = ?",
+        (token,),
+    )
     row = cur.fetchone()
     conn.close()
-
     if not row:
         return None, None
-
     return row["owner_telegram_id"], row["folder_id"]
 
 
 def get_files_of_owner(owner_id, folder_id=None, limit=30):
     conn = get_conn()
     cur = conn.cursor()
-
     if folder_id:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT * FROM files
             WHERE owner_telegram_id = ? AND folder_id = ?
             ORDER BY created_at DESC
             LIMIT ?
-        """, (owner_id, folder_id, limit))
+            """,
+            (owner_id, folder_id, limit),
+        )
     else:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT * FROM files
             WHERE owner_telegram_id = ?
             ORDER BY created_at DESC
             LIMIT ?
-        """, (owner_id, limit))
-
+            """,
+            (owner_id, limit),
+        )
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-# ========================= BOT TEXT =========================
+# ========================= TEXT =========================
 
 WELCOME_TEXT = (
-    "🌤 *AZ Lưu Trữ File*\n\n"
-    "• Lưu trữ hình ảnh, video, tài liệu, file bất kỳ.\n"
-    "• Không bao giờ mất dữ liệu.\n"
-    "• Chia sẻ thư mục qua link.\n\n"
-    "👉 Bấm 📁 *Tạo thư mục mới* để tạo folder.\n"
-    "👉 Gõ /upload để gửi file.\n"
-    "👉 Gõ /getlink để lấy link chia sẻ.\n"
+    "🌤 *Bot Lưu Trữ File*\n\n"
+    "• Lưu hình ảnh, video, tài liệu, file bất kỳ.\n"
+    "• Không lo mất dữ liệu, có thể tải lại bất cứ lúc nào.\n\n"
+    "👉 Bấm nút *📁 Tạo thư mục mới* để tạo thư mục.\n"
+    "👉 Dùng /upload để gửi file.\n"
+    "👉 Dùng /getlink để lấy link chia sẻ thư mục hiện tại.\n"
 )
 
 
 # ========================= HANDLERS =========================
 
-# Debug để kiểm tra username
 async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    real_username = context.bot.username  # username thật Telegram trả về
+    real_username = context.bot.username
     await update.message.reply_text(
         "DEBUG INFO:\n"
-        f"- BOT_USERNAME (env): {BOT_USERNAME}\n"
         f"- bot.username (thật): {real_username}"
     )
 
@@ -353,68 +344,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args:
         arg = args[0]
         if arg.startswith("share_"):
-
             token = arg[len("share_"):]
             owner_id, folder_id = get_owner_and_folder_by_token(token)
-
             if not owner_id:
                 await update.message.reply_text("❌ Link chia sẻ không hợp lệ.")
                 return
 
-            files = get_files_of_owner(owner_id, folder_id=folder_id)
+            files = get_files_of_owner(owner_id, folder_id=folder_id, limit=30)
             if not files:
                 await update.message.reply_text("📂 Thư mục này chưa có file.")
                 return
 
-            msg = "📂 *Danh sách file*:\n\n"
+            text_lines = ["📂 *Danh sách file được chia sẻ:*\n"]
             for f in files:
-                msg += f"• {f['file_name']} — {f['file_size']} bytes\n"
+                text_lines.append(
+                    f"• {f['file_name']} — {f['file_size']} bytes"
+                )
 
             await update.message.reply_text(
-                msg, reply_markup=get_main_keyboard(), parse_mode="Markdown"
+                "\n".join(text_lines),
+                reply_markup=get_main_keyboard(),
+                parse_mode="Markdown",
             )
             return
 
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
-async def upload_cmd(update, context):
+async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     folder = ensure_current_folder(user.id)
-
     UPLOAD_MODE_USERS.add(user.id)
-
     await update.message.reply_text(
         f"📁 Đang lưu vào thư mục: *{folder['name']}*\n"
         "➡ Gửi file cho bot.",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
-    )
-
-
-async def new_folder_button(update, context):
-    """Khi nhấn nút 📁 Tạo thư mục mới → bot hỏi tên thư mục."""
-    user = update.effective_user
-
-    FOLDER_NAME_WAIT_USERS.add(user.id)
-
-    await update.message.reply_text(
-        "✏️ Nhập *tên thư mục mới* bạn muốn tạo:",
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown",
     )
 
 
-async def handle_text(update, context):
+async def new_folder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    FOLDER_NAME_WAIT_USERS.add(user.id)
+    await update.message.reply_text(
+        "✏️ Hãy nhập *tên thư mục mới* bạn muốn tạo.",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
-    # Đang chờ nhập tên thư mục
-    if user.id in FOLDER_NAME_WAIT_USERS:
+    if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
         folder = create_or_get_folder(user.id, text)
@@ -422,21 +409,21 @@ async def handle_text(update, context):
         UPLOAD_MODE_USERS.add(user.id)
 
         await update.message.reply_text(
-            f"📁 Đã tạo thư mục: *{text}*\n"
-            "➡ Bây giờ hãy gửi file.",
+            f"📁 Đã tạo / chọn thư mục: *{text}*\n"
+            "➡ Bây giờ hãy gửi file cho bot.",
             reply_markup=get_main_keyboard(),
             parse_mode="Markdown",
         )
         return
 
 
-async def setfolder_cmd(update, context):
+async def setfolder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     if not context.args:
         await update.message.reply_text(
-            "Cách dùng:\n/setfolder tên_thư_mục",
-            reply_markup=get_main_keyboard()
+            "Cách dùng:\n/setfolder Tên_thư_mục",
+            reply_markup=get_main_keyboard(),
         )
         return
 
@@ -446,96 +433,114 @@ async def setfolder_cmd(update, context):
     UPLOAD_MODE_USERS.add(user.id)
 
     await update.message.reply_text(
-        f"📁 Đã chuyển đến thư mục: *{name}*",
+        f"📁 Đã chuyển sang thư mục: *{name}*",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
-async def folders_cmd(update, context):
+async def folders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     folders = list_folders(user.id)
     cur = get_current_folder(user.id)
 
-    msg = "📂 *Danh sách thư mục:*\n\n"
-
-    for f in folders:
-        mark = "⭐" if cur and cur["id"] == f["id"] else "•"
-        msg += f"{mark} {f['name']} — {f['created_at']}\n"
-
-    await update.message.reply_text(
-        msg, reply_markup=get_main_keyboard(), parse_mode="Markdown"
-    )
-
-
-async def myfiles_cmd(update, context):
-    user = update.effective_user
-    folder = ensure_current_folder(user.id)
-    files = get_files_of_owner(user.id, folder_id=folder["id"])
-
-    if not files:
+    if not folders:
         await update.message.reply_text(
-            f"📂 Thư mục *{folder['name']}* không có file.",
+            "Bạn chưa có thư mục nào. Hãy bấm *📁 Tạo thư mục mới*.",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 
-    msg = f"📂 *Các file trong thư mục {folder['name']}:*\n\n"
-
-    for f in files:
-        msg += f"• {f['file_name']} — {f['file_size']} bytes\n"
+    lines = ["📂 *Các thư mục của bạn:*\n"]
+    for f in folders:
+        mark = "⭐" if cur and cur["id"] == f["id"] else "•"
+        lines.append(f"{mark} {f['name']} — {f['created_at']}")
 
     await update.message.reply_text(
-        msg, reply_markup=get_main_keyboard(), parse_mode="Markdown"
+        "\n".join(lines),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+async def myfiles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    folder = ensure_current_folder(user.id)
+    files = get_files_of_owner(user.id, folder_id=folder["id"], limit=30)
+
+    if not files:
+        await update.message.reply_text(
+            f"Thư mục *{folder['name']}* chưa có file nào.",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = [
+        f"📂 *30 file mới nhất trong thư mục {folder['name']}:*\n"
+    ]
+    for f in files:
+        lines.append(f"• {f['file_name']} — {f['file_size']} bytes")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown",
     )
 
 
 async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     folder = ensure_current_folder(user.id)
-
     token = get_share_token(user.id, folder["id"])
 
-    # ❗ DÙ BOT_USERNAME TRÊN ENV CÓ SAI THÌ VẪN LẤY ĐÚNG Ở ĐÂY
+    # 🔥 LẤY USERNAME THẬT TỪ TELEGRAM, KHÔNG DÙNG ENV NỮA
     real_username = context.bot.username  # ví dụ: 'luutruireng_bot'
 
     link = f"https://t.me/{real_username}?start=share_{token}"
 
     await update.message.reply_text(
-        f"🔗 Link chia sẻ thư mục *{folder['name']}*:\n"
-        f"{link}",
+        f"🔗 Link chia sẻ thư mục *{folder['name']}*:\n{link}",
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown",
     )
 
 
-async def handle_file(update, context):
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user = update.effective_user
     folder = ensure_current_folder(user.id)
 
     file_obj = None
+    file_type = None
+    file_name = None
+    file_size = None
+    mime_type = None
 
     if message.document:
         file_obj = message.document
         file_type = "document"
         file_name = file_obj.file_name
+        file_size = file_obj.file_size
         mime_type = file_obj.mime_type
     elif message.photo:
         file_obj = message.photo[-1]
         file_type = "photo"
         file_name = "photo.jpg"
+        file_size = file_obj.file_size
         mime_type = "image/jpeg"
     elif message.video:
         file_obj = message.video
         file_type = "video"
         file_name = "video.mp4"
+        file_size = file_obj.file_size
         mime_type = "video/mp4"
     elif message.audio:
         file_obj = message.audio
         file_type = "audio"
         file_name = file_obj.file_name or "audio.mp3"
+        file_size = file_obj.file_size
         mime_type = file_obj.mime_type
     else:
         return
@@ -547,33 +552,31 @@ async def handle_file(update, context):
         file_obj.file_id,
         file_name,
         file_type,
-        file_obj.file_size,
+        file_size,
         mime_type,
     )
 
     await message.reply_text(
         f"✅ Đã lưu file vào thư mục *{folder['name']}*:\n• {file_name}",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
-async def unknown_cmd(update, context):
+async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚠ Lệnh không tồn tại. Dùng:\n"
-        "/upload • /getlink • /myfiles • /folders",
-        reply_markup=get_main_keyboard()
+        "Lệnh không tồn tại. Hãy dùng:\n"
+        "/upload • /getlink • /myfiles • /folders\n"
+        "Hoặc bấm nút ở dưới.",
+        reply_markup=get_main_keyboard(),
     )
 
 
-# ========================= RUN BOT =========================
+# ========================= MAIN =========================
 
 def main():
     if not BOT_TOKEN:
-        raise SystemExit("❌ Chưa có BOT_TOKEN hoặc Token trong Railway!")
-
-    if not BOT_USERNAME:
-        raise SystemExit("❌ Chưa đặt BOT_USERNAME trong Railway!")
+        raise SystemExit("❌ Chưa thiết lập BOT_TOKEN hoặc Token.")
 
     init_db()
     logger.info("Bot started.")
@@ -588,17 +591,27 @@ def main():
     app.add_handler(CommandHandler("folders", folders_cmd))
     app.add_handler(CommandHandler("setfolder", setfolder_cmd))
 
-    # Create new folder
-    app.add_handler(MessageHandler(filters.Regex("^📁 Tạo thư mục mới$"), new_folder_button))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.Regex("^📁 Tạo thư mục mới$"),
+            new_folder_button,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text,
+        )
+    )
 
-    # Text input
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # File upload
-    file_filter = filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO
+    file_filter = (
+        filters.Document.ALL
+        | filters.PHOTO
+        | filters.VIDEO
+        | filters.AUDIO
+    )
     app.add_handler(MessageHandler(file_filter, handle_file))
 
-    # Unknown commands
     app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
 
     app.run_polling()
