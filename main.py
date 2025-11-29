@@ -433,7 +433,7 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
                                 await context.bot.send_photo(
                                     chat_id=chat_id,
                                     photo=m.media,
-                                    caption=m.caption,
+                                    caption	m.caption,
                                 )
                             elif isinstance(m, InputMediaDocument):
                                 await context.bot.send_document(
@@ -446,7 +446,6 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
                 batch = []
                 count_in_batch = 0
         else:
-            # loại file không support media group
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -455,7 +454,6 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
             except Exception as e:
                 logger.exception("Lỗi khi gửi message loại không hỗ trợ: %s", e)
 
-    # phần còn lại
     if batch:
         try:
             await context.bot.send_media_group(chat_id=chat_id, media=batch)
@@ -487,6 +485,9 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
 
 # ========================= HANDLERS =========================
 
+PASS_WAIT_USERS = {}
+
+
 async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Bot version: {APP_VERSION}")
 
@@ -501,15 +502,9 @@ async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /start
-    - Nếu có arg share_xxx: kiểm tra mật khẩu (nếu có), sau đó gửi file.
-    - Nếu không: hiển thị welcome.
-    """
     user = update.effective_user
     get_or_create_user(user)
 
-    # reset trạng thái nhập mật khẩu cũ (nếu có)
     PASS_WAIT_USERS.pop(user.id, None)
 
     args = context.args
@@ -530,7 +525,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             folder_name = folder["name"]
             folder_pass = folder["password"]
 
-            # nếu có mật khẩu -> yêu cầu nhập
             if folder_pass and folder_pass.strip():
                 PASS_WAIT_USERS[user.id] = (owner_id, folder_id)
                 await update.message.reply_text(
@@ -541,7 +535,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # không có mật khẩu -> gửi thẳng
             await send_shared_folder_files(
                 chat_id=update.effective_chat.id,
                 owner_id=owner_id,
@@ -550,7 +543,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # không có tham số share_
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
@@ -584,7 +576,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
-    # 1. Đang chờ nhập mật khẩu cho thư mục share
     if user.id in PASS_WAIT_USERS and not text.startswith("/"):
         owner_id, folder_id = PASS_WAIT_USERS[user.id]
         folder = get_folder_by_id(folder_id)
@@ -618,7 +609,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # 2. Đang chờ nhập tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -731,10 +721,6 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setpass_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /setpass <pass>  -> đặt mật khẩu cho thư mục hiện tại
-    /setpass off     -> bỏ mật khẩu
-    """
     user = update.effective_user
     folder = ensure_current_folder(user.id)
 
@@ -836,7 +822,12 @@ def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ Chưa thiết lập BOT_TOKEN hoặc Token.")
 
-    init_db()
+    # nếu DB lỗi sẽ log ra, tránh im lặng
+    try:
+        init_db()
+    except Exception as e:
+        logger.exception("❌ Lỗi khi khởi tạo database: %s", e)
+        # vẫn cho bot chạy, nhưng có thể các lệnh khác sẽ lỗi
     logger.info("Bot started.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
