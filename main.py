@@ -25,9 +25,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# phiên bản mới: share dạng album + tên thư mục + mật khẩu
-APP_VERSION = "v6-folder-password"
-MEDIA_GROUP_SIZE = 3  # muốn 10 file/lần thì đổi thành 10
+# phiên bản mới: share dạng album + hiện tên thư mục
+APP_VERSION = "v5-mediagroup-folder-name"
+MEDIA_GROUP_SIZE = 3  # muốn 10 cái 1 lần thì đổi thành 10
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -37,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 UPLOAD_MODE_USERS = set()
 FOLDER_NAME_WAIT_USERS = set()
-# user_id -> (owner_id, folder_id) đang chờ nhập mật khẩu
-PASS_WAIT_USERS = {}
 
 
 # ========================= KEYBOARD =========================
@@ -117,15 +115,9 @@ def init_db():
         )
     """)
 
-    # đảm bảo cột password tồn tại trong bảng folders
-    cur.execute("PRAGMA table_info(folders)")
-    cols = [row[1] for row in cur.fetchall()]
-    if "password" not in cols:
-        cur.execute("ALTER TABLE folders ADD COLUMN password TEXT")
-
     conn.commit()
     conn.close()
-    logger.info("Database OK (có cột password).")
+    logger.info("Database OK.")
 
 
 def get_or_create_user(tg_user):
@@ -244,17 +236,6 @@ def get_folder_by_id(folder_id):
     return row
 
 
-def update_folder_password(folder_id, password):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE folders SET password = ? WHERE id = ?",
-        (password, folder_id),
-    )
-    conn.commit()
-    conn.close()
-
-
 def save_file(owner_id, folder_id, file_unique_id, file_id,
               file_name, file_type, file_size, mime_type):
     conn = get_conn()
@@ -362,65 +343,141 @@ WELCOME_TEXT = (
     "👉 Bấm *📁 Tạo thư mục mới* để tạo thư mục.\n"
     "👉 Dùng /upload để gửi file.\n"
     "👉 Dùng /getlink để lấy link chia sẻ.\n"
-    "👉 Dùng /setpass <mật_khẩu> để đặt mật khẩu cho thư mục hiện tại,\n"
-    "   hoặc /setpass off để tắt mật khẩu.\n"
 )
 
 
-# ========================= UTIL: gửi thư mục được chia sẻ =========================
+# ========================= HANDLERS =========================
 
-async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
-                                   context: ContextTypes.DEFAULT_TYPE):
-    folder = get_folder_by_id(folder_id)
-    folder_name = folder["name"] if folder else "Không tên"
+async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Bot version: {APP_VERSION}")
 
-    files = get_files_of_owner(owner_id, folder_id=folder_id, limit=30)
-    if not files:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"📂 Thư mục *{folder_name}* chưa có file.",
-            parse_mode="Markdown",
-        )
-        return
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"📂 *Thư mục được chia sẻ:* {folder_name}\n"
-            f"(tối đa 30 file mới nhất)\n"
-            f"Bot sẽ gửi file theo lố {MEDIA_GROUP_SIZE} cái một lần."
-        ),
-        parse_mode="Markdown",
+async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    real_username = context.bot.username
+    await update.message.reply_text(
+        "DEBUG INFO:\n"
+        f"- bot.username (thật): {real_username}\n"
+        f"- version: {APP_VERSION}"
     )
 
-    batch = []
-    count_in_batch = 0
 
-    for f in files:
-        file_type = f["file_type"]
-        file_id = f["file_id"]
-        file_name = f["file_name"]
-        file_size = f["file_size"]
-        caption = f"{file_name} — {file_size} bytes"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start
+    - Nếu có arg share_xxx: gửi lại file theo lố (media group) cho user.
+    - Nếu không: hiển thị màn hình chào.
+    """
+    user = update.effective_user
+    get_or_create_user(user)
 
-        media = None
-        if file_type == "video":
-            media = InputMediaVideo(media=file_id, caption=caption)
-        elif file_type == "photo":
-            media = InputMediaPhoto(media=file_id, caption=caption)
-        elif file_type == "document":
-            media = InputMediaDocument(media=file_id, caption=caption)
+    args = context.args
+    if args:
+        arg = args[0]
+        if arg.startswith("share_"):
+            token = arg[len("share_"):]
+            owner_id, folder_id = get_owner_and_folder_by_token(token)
+            if not owner_id:
+                await update.message.reply_text("❌ Link chia sẻ không hợp lệ.")
+                return
 
-        if media:
-            batch.append(media)
-            count_in_batch += 1
+            # Lấy tên thư mục
+            folder = get_folder_by_id(folder_id)
+            folder_name = folder["name"] if folder else "Không tên"
 
-            if count_in_batch >= MEDIA_GROUP_SIZE:
+            files = get_files_of_owner(owner_id, folder_id=folder_id, limit=30)
+            if not files:
+                await update.message.reply_text(
+                    f"📂 Thư mục *{folder_name}* chưa có file.",
+                    reply_markup=get_main_keyboard(),
+                    parse_mode="Markdown",
+                )
+                return
+
+            await update.message.reply_text(
+                f"📂 *Thư mục được chia sẻ:* {folder_name}\n"
+                f"(tối đa 30 file mới nhất)\n"
+                f"Bot sẽ gửi file theo lố {MEDIA_GROUP_SIZE} cái một lần.",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(),
+            )
+
+            chat_id = update.effective_chat.id
+
+            batch = []
+            count_in_batch = 0
+
+            for f in files:
+                file_type = f["file_type"]
+                file_id = f["file_id"]
+                file_name = f["file_name"]
+                file_size = f["file_size"]
+                caption = f"{file_name} — {file_size} bytes"
+
+                media = None
+                if file_type == "video":
+                    media = InputMediaVideo(media=file_id, caption=caption)
+                elif file_type == "photo":
+                    media = InputMediaPhoto(media=file_id, caption=caption)
+                elif file_type == "document":
+                    media = InputMediaDocument(media=file_id, caption=caption)
+
+                if media:
+                    batch.append(media)
+                    count_in_batch += 1
+
+                    # đủ lố thì gửi media group
+                    if count_in_batch >= MEDIA_GROUP_SIZE:
+                        try:
+                            await context.bot.send_media_group(
+                                chat_id=chat_id,
+                                media=batch,
+                            )
+                        except Exception as e:
+                            logger.exception("Lỗi khi gửi media group: %s", e)
+                            # fallback: gửi từng cái
+                            for m in batch:
+                                try:
+                                    if isinstance(m, InputMediaVideo):
+                                        await context.bot.send_video(
+                                            chat_id=chat_id,
+                                            video=m.media,
+                                            caption=m.caption,
+                                        )
+                                    elif isinstance(m, InputMediaPhoto):
+                                        await context.bot.send_photo(
+                                            chat_id=chat_id,
+                                            photo=m.media,
+                                            caption=m.caption,
+                                        )
+                                    elif isinstance(m, InputMediaDocument):
+                                        await context.bot.send_document(
+                                            chat_id=chat_id,
+                                            document=m.media,
+                                            caption=m.caption,
+                                        )
+                                except Exception as e2:
+                                    logger.exception("Lỗi khi gửi từng media: %s", e2)
+                        batch = []
+                        count_in_batch = 0
+                else:
+                    # loại file không support media group
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Không gửi được trong album: {caption} (loại: {file_type})",
+                        )
+                    except Exception as e:
+                        logger.exception("Lỗi khi gửi message loại không hỗ trợ: %s", e)
+
+            # gửi phần còn lại (nếu chưa đủ lố)
+            if batch:
                 try:
-                    await context.bot.send_media_group(chat_id=chat_id, media=batch)
+                    await context.bot.send_media_group(
+                        chat_id=chat_id,
+                        media=batch,
+                    )
                 except Exception as e:
-                    logger.exception("Lỗi khi gửi media group: %s", e)
-                    # fallback: gửi từng file
+                    logger.exception("Lỗi khi gửi media group cuối: %s", e)
                     for m in batch:
                         try:
                             if isinstance(m, InputMediaVideo):
@@ -442,115 +499,11 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
                                     caption=m.caption,
                                 )
                         except Exception as e2:
-                            logger.exception("Lỗi khi gửi từng media: %s", e2)
-                batch = []
-                count_in_batch = 0
-        else:
-            # loại file không support media group
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"Không gửi được trong album: {caption} (loại: {file_type})",
-                )
-            except Exception as e:
-                logger.exception("Lỗi khi gửi message loại không hỗ trợ: %s", e)
+                            logger.exception("Lỗi khi gửi từng media (batch cuối): %s", e2)
 
-    # phần còn lại
-    if batch:
-        try:
-            await context.bot.send_media_group(chat_id=chat_id, media=batch)
-        except Exception as e:
-            logger.exception("Lỗi khi gửi media group cuối: %s", e)
-            for m in batch:
-                try:
-                    if isinstance(m, InputMediaVideo):
-                        await context.bot.send_video(
-                            chat_id=chat_id,
-                            video=m.media,
-                            caption=m.caption,
-                        )
-                    elif isinstance(m, InputMediaPhoto):
-                        await context.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=m.media,
-                            caption=m.caption,
-                        )
-                    elif isinstance(m, InputMediaDocument):
-                        await context.bot.send_document(
-                            chat_id=chat_id,
-                            document=m.media,
-                            caption=m.caption,
-                        )
-                except Exception as e2:
-                    logger.exception("Lỗi khi gửi từng media (batch cuối): %s", e2)
+            return  # kết thúc nhánh share_
 
-
-# ========================= HANDLERS =========================
-
-async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Bot version: {APP_VERSION}")
-
-
-async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    real_username = context.bot.username
-    await update.message.reply_text(
-        "DEBUG INFO:\n"
-        f"- bot.username (thật): {real_username}\n"
-        f"- version: {APP_VERSION}"
-    )
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /start
-    - Nếu có arg share_xxx: kiểm tra mật khẩu (nếu có), sau đó gửi file.
-    - Nếu không: hiển thị welcome.
-    """
-    user = update.effective_user
-    get_or_create_user(user)
-
-    # reset trạng thái nhập mật khẩu cũ (nếu có)
-    PASS_WAIT_USERS.pop(user.id, None)
-
-    args = context.args
-    if args:
-        arg = args[0]
-        if arg.startswith("share_"):
-            token = arg[len("share_"):]
-            owner_id, folder_id = get_owner_and_folder_by_token(token)
-            if not owner_id:
-                await update.message.reply_text("❌ Link chia sẻ không hợp lệ.")
-                return
-
-            folder = get_folder_by_id(folder_id)
-            if not folder:
-                await update.message.reply_text("❌ Thư mục không tồn tại.")
-                return
-
-            folder_name = folder["name"]
-            folder_pass = folder["password"]
-
-            # nếu có mật khẩu -> yêu cầu nhập
-            if folder_pass and folder_pass.strip():
-                PASS_WAIT_USERS[user.id] = (owner_id, folder_id)
-                await update.message.reply_text(
-                    f"🔐 Thư mục *{folder_name}* đã được đặt mật khẩu.\n"
-                    "Vui lòng nhập *mật khẩu* để xem file.",
-                    reply_markup=get_main_keyboard(),
-                    parse_mode="Markdown",
-                )
-                return
-
-            # không có mật khẩu -> gửi thẳng
-            await send_shared_folder_files(
-                chat_id=update.effective_chat.id,
-                owner_id=owner_id,
-                folder_id=folder_id,
-                context=context,
-            )
-            return
-
-    # không có tham số share_
+    # Không có share_: hiển thị welcome
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
@@ -584,41 +537,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
-    # 1. Đang chờ nhập mật khẩu cho thư mục share
-    if user.id in PASS_WAIT_USERS and not text.startswith("/"):
-        owner_id, folder_id = PASS_WAIT_USERS[user.id]
-        folder = get_folder_by_id(folder_id)
-        real_pass = folder["password"] if folder else None
-
-        if not real_pass:
-            PASS_WAIT_USERS.pop(user.id, None)
-            await update.message.reply_text(
-                "Thư mục này hiện không còn đặt mật khẩu.",
-                reply_markup=get_main_keyboard(),
-            )
-            return
-
-        if text == real_pass:
-            PASS_WAIT_USERS.pop(user.id, None)
-            await update.message.reply_text(
-                "✅ Mật khẩu đúng, đang gửi file...",
-                reply_markup=get_main_keyboard(),
-            )
-            await send_shared_folder_files(
-                chat_id=update.effective_chat.id,
-                owner_id=owner_id,
-                folder_id=folder_id,
-                context=context,
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Mật khẩu sai, vui lòng nhập lại.\n"
-                "Hoặc gửi /start để thoát.",
-                reply_markup=get_main_keyboard(),
-            )
-        return
-
-    # 2. Đang chờ nhập tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -673,8 +591,7 @@ async def folders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📂 *Các thư mục của bạn:*\n"]
     for f in folders:
         mark = "⭐" if cur and cur["id"] == f["id"] else "•"
-        has_pass = " 🔐" if f["password"] else ""
-        lines.append(f"{mark} {f['name']}{has_pass} — {f['created_at']}")
+        lines.append(f"{mark} {f['name']} — {f['created_at']}")
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -728,42 +645,6 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown",
     )
-
-
-async def setpass_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /setpass <pass>  -> đặt mật khẩu cho thư mục hiện tại
-    /setpass off     -> bỏ mật khẩu
-    """
-    user = update.effective_user
-    folder = ensure_current_folder(user.id)
-
-    if not context.args:
-        await update.message.reply_text(
-            "Cách dùng:\n"
-            "/setpass <mật_khẩu> – đặt mật khẩu cho thư mục hiện tại.\n"
-            "/setpass off – bỏ mật khẩu.\n"
-            f"Thư mục hiện tại: *{folder['name']}*",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
-        )
-        return
-
-    arg = " ".join(context.args).strip()
-    if arg.lower() in ["off", "none", "0", "bo", "bỏ"]:
-        update_folder_password(folder["id"], None)
-        await update.message.reply_text(
-            f"🔓 Đã *tắt mật khẩu* cho thư mục *{folder['name']}*.",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
-        )
-    else:
-        update_folder_password(folder["id"], arg)
-        await update.message.reply_text(
-            f"🔐 Đã đặt mật khẩu cho thư mục *{folder['name']}*.",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
-        )
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -825,7 +706,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Lệnh không tồn tại. Hãy dùng:\n"
-        "/upload • /getlink • /myfiles • /folders • /setfolder • /setpass • /version",
+        "/upload • /getlink • /myfiles • /folders • /version",
         reply_markup=get_main_keyboard(),
     )
 
@@ -849,7 +730,6 @@ def main():
     app.add_handler(CommandHandler("myfiles", myfiles_cmd))
     app.add_handler(CommandHandler("folders", folders_cmd))
     app.add_handler(CommandHandler("setfolder", setfolder_cmd))
-    app.add_handler(CommandHandler("setpass", setpass_cmd))
 
     app.add_handler(
         MessageHandler(
