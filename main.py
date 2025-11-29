@@ -18,7 +18,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-APP_VERSION = "v3-getlink-fix"  # dùng để check code đã lên chưa
+APP_VERSION = "v4-sharefiles"  # phiên bản mới: gửi file khi mở link share
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -344,6 +344,11 @@ async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start
+    - Nếu có arg share_xxx: gửi lại file trong thư mục chia sẻ cho user.
+    - Nếu không: hiển thị màn hình chào.
+    """
     user = update.effective_user
     get_or_create_user(user)
 
@@ -359,22 +364,69 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             files = get_files_of_owner(owner_id, folder_id=folder_id, limit=30)
             if not files:
-                await update.message.reply_text("📂 Thư mục này chưa có file.")
+                await update.message.reply_text(
+                    "📂 Thư mục này chưa có file.",
+                    reply_markup=get_main_keyboard(),
+                )
                 return
 
-            text_lines = ["📂 *Danh sách file được chia sẻ:*\n"]
-            for f in files:
-                text_lines.append(
-                    f"• {f['file_name']} — {f['file_size']} bytes"
-                )
-
             await update.message.reply_text(
-                "\n".join(text_lines),
-                reply_markup=get_main_keyboard(),
+                "📂 *Danh sách file được chia sẻ:* (tối đa 30 file mới nhất)\n"
+                "Bot sẽ gửi từng file bên dưới.",
                 parse_mode="Markdown",
+                reply_markup=get_main_keyboard(),
             )
-            return
 
+            chat_id = update.effective_chat.id
+
+            for f in files:
+                file_type = f["file_type"]
+                file_id = f["file_id"]
+                file_name = f["file_name"]
+                file_size = f["file_size"]
+
+                caption = f"{file_name} — {file_size} bytes"
+
+                try:
+                    if file_type == "video":
+                        await context.bot.send_video(
+                            chat_id=chat_id,
+                            video=file_id,
+                            caption=caption,
+                        )
+                    elif file_type == "photo":
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=file_id,
+                            caption=caption,
+                        )
+                    elif file_type == "document":
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=file_id,
+                            caption=caption,
+                        )
+                    elif file_type == "audio":
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=file_id,
+                            caption=caption,
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Không gửi được file: {caption} (loại không hỗ trợ: {file_type})",
+                        )
+                except Exception as e:
+                    logger.exception("Lỗi khi gửi file chia sẻ: %s", e)
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ Lỗi khi gửi file: {caption}",
+                    )
+
+            return  # kết thúc nhánh share_
+
+    # Không có share_: hiển thị welcome
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
@@ -408,6 +460,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
+    # Người dùng đang nhập tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -502,11 +555,10 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
 
-    # Username cố định
+    # Username cố định cho chắc
     real_username = "luutruireng_bot"
     link = f"https://t.me/{real_username}?start=share_{token}"
 
-    # Gửi 2 dạng: 1 dạng normal để bấm, 1 dạng RAW trong `code` để thấy rõ dấu _
     text = (
         f"🔗 Link chia sẻ thư mục *{folder['name']}*:\n"
         f"{link}\n\n"
