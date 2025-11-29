@@ -362,7 +362,7 @@ WELCOME_TEXT = (
     "👉 Bấm *📁 Tạo thư mục mới* để tạo thư mục.\n"
     "👉 Dùng /upload để gửi file.\n"
     "👉 Dùng /getlink để lấy link chia sẻ.\n"
-    "👉 Dùng /setpass <mật_khẩu> để đặt mật khẩu cho thư mục hiện tại\n"
+    "👉 Dùng /setpass <mật khẩu> để đặt mật khẩu cho thư mục hiện tại\n"
     "   hoặc /setpass off để tắt mật khẩu.\n"
 )
 
@@ -499,10 +499,13 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     real_username = context.bot.username
     await update.message.reply_text(
-        "DEBUG INFO:\n"
-        f"- bot.username (thật): {real_username}\n"
-        f"- version: {APP_VERSION}"
-    )
+    "Cách dùng:\n"
+    "/setpass <mật khẩu> – đặt mật khẩu cho thư mục hiện tại.\n"
+    "/setpass off – bỏ mật khẩu.\n"
+    f"Thư mục hiện tại: *{folder['name']}*",
+    reply_markup=get_main_keyboard(),
+    parse_mode="Markdown",
+)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
