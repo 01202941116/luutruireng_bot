@@ -502,13 +502,19 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
 
-    # 🔥 DÙNG CỐ ĐỊNH USERNAME ĐÃ BIẾT
+    # Username cố định
     real_username = "luutruireng_bot"
-
     link = f"https://t.me/{real_username}?start=share_{token}"
 
+    # Gửi 2 dạng: 1 dạng normal để bấm, 1 dạng RAW trong `code` để thấy rõ dấu _
+    text = (
+        f"🔗 Link chia sẻ thư mục *{folder['name']}*:\n"
+        f"{link}\n\n"
+        f"`{link}`"
+    )
+
     await update.message.reply_text(
-        f"🔗 Link chia sẻ thư mục *{folder['name']}*:\n{link}",
+        text,
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown",
     )
