@@ -4,7 +4,7 @@ import sqlite3
 import secrets
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -14,9 +14,17 @@ from telegram.ext import (
 )
 
 # ----------------- CONFIG -----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "YOUR_BOT_USERNAME")  # dùng để tạo link /getlink
+# Railway: bạn có thể dùng BOT_TOKEN hoặc Token đều được
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
+
+# Username bot KHÔNG có @, ví dụ: az_cloud_storage_bot
+BOT_USERNAME = os.getenv("BOT_USERNAME", "YOUR_BOT_USERNAME")
+
+# File SQLite để lưu dữ liệu
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
+
+# ID Telegram của bạn (admin) – có thể để 0 nếu chưa cần
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -24,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# set này dùng để ghi nhớ ai đang ở chế độ /upload (chỉ lưu trong RAM)
+# set này dùng để ghi nhớ ai đang ở chế độ /upload (lưu trong RAM)
 UPLOAD_MODE_USERS = set()
 
 
@@ -105,17 +113,34 @@ def get_or_create_user(tg_user):
     return row
 
 
-def save_file(owner_id, file_unique_id, file_id, file_name, file_type, file_size, mime_type):
+def save_file(
+    owner_id,
+    file_unique_id,
+    file_id,
+    file_name,
+    file_type,
+    file_size,
+    mime_type,
+):
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute(
         """
         INSERT OR IGNORE INTO files
-        (file_unique_id, file_id, owner_telegram_id, file_name, file_type, file_size, mime_type)
+        (file_unique_id, file_id, owner_telegram_id, file_name,
+         file_type, file_size, mime_type)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (file_unique_id, file_id, owner_id, file_name, file_type, file_size, mime_type),
+        (
+            file_unique_id,
+            file_id,
+            owner_id,
+            file_name,
+            file_type,
+            file_size,
+            mime_type,
+        ),
     )
     conn.commit()
     conn.close()
@@ -124,7 +149,10 @@ def save_file(owner_id, file_unique_id, file_id, file_name, file_type, file_size
 def get_share_token(owner_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT token FROM share_tokens WHERE owner_telegram_id = ?", (owner_id,))
+    cur.execute(
+        "SELECT token FROM share_tokens WHERE owner_telegram_id = ?",
+        (owner_id,),
+    )
     row = cur.fetchone()
     if row:
         conn.close()
@@ -192,16 +220,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args:
         arg = args[0]
+        # /start share_xxx
         if arg.startswith("share_"):
             token = arg[len("share_") :]
             owner_id = get_owner_by_token(token)
             if not owner_id:
-                await update.message.reply_text("❌ Link chia sẻ không hợp lệ hoặc đã bị xóa.")
+                await update.message.reply_text(
+                    "❌ Link chia sẻ không hợp lệ hoặc đã bị xóa."
+                )
                 return
 
             files = get_files_of_owner(owner_id, limit=30)
             if not files:
-                await update.message.reply_text("📂 Thư mục này hiện chưa có file nào.")
+                await update.message.reply_text(
+                    "📂 Thư mục này hiện chưa có file nào."
+                )
                 return
 
             text_lines = [f"📂 Danh sách file được chia sẻ ({len(files)}):\n"]
@@ -209,7 +242,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name = f["file_name"] or f["file_type"]
                 created = f["created_at"]
                 text_lines.append(f"• {name} ({created})")
-            text_lines.append("\nBạn muốn tải file nào? Hãy báo chủ thư mục để họ gửi trực tiếp hoặc bổ sung tính năng tải về tự động.")
+            text_lines.append(
+                "\nBạn muốn tải file nào? "
+                "Hãy báo chủ thư mục để họ gửi trực tiếp "
+                "hoặc bổ sung tính năng tải về tự động."
+            )
             await update.message.reply_text("\n".join(text_lines))
             return
 
@@ -220,6 +257,7 @@ async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user)
     UPLOAD_MODE_USERS.add(user.id)
+
     await update.message.reply_text(
         "✅ Bạn đã bật chế độ upload.\n"
         "Bây giờ hãy gửi hình ảnh / video / tài liệu... cho bot.\n"
@@ -230,8 +268,11 @@ async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def myfiles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     files = get_files_of_owner(user.id, limit=30)
+
     if not files:
-        await update.message.reply_text("Bạn chưa lưu file nào. Hãy dùng /upload để bắt đầu.")
+        await update.message.reply_text(
+            "Bạn chưa lưu file nào. Hãy dùng /upload để bắt đầu."
+        )
         return
 
     text_lines = [f"📂 30 file mới nhất của bạn ({len(files)}):\n"]
@@ -240,19 +281,22 @@ async def myfiles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         created = f["created_at"]
         size = f["file_size"] or 0
         text_lines.append(f"• {name} - {size} bytes - {created}")
+
     await update.message.reply_text("\n".join(text_lines))
 
 
 async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user)
-    token = get_share_token(user.id)
 
+    token = get_share_token(user.id)
     link = f"https://t.me/{BOT_USERNAME}?start=share_{token}"
+
     await update.message.reply_text(
         "🔗 Link thư mục chia sẻ của bạn:\n"
         f"{link}\n\n"
-        "Ai có link này mở bot sẽ thấy danh sách file bạn đã lưu (tối đa 30 file gần nhất)."
+        "Ai có link này mở bot sẽ thấy danh sách file bạn đã lưu "
+        "(tối đa 30 file gần nhất)."
     )
 
 
@@ -262,7 +306,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     get_or_create_user(user)
 
     if user.id not in UPLOAD_MODE_USERS:
-        # vẫn cho lưu luôn cho tiện
         UPLOAD_MODE_USERS.add(user.id)
 
     file_obj = None
@@ -284,7 +327,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = file_obj.file_size
         mime_type = "video/mp4"
     elif message.photo:
-        # photo là list, lấy ảnh lớn nhất
         file_obj = message.photo[-1]
         file_type = "photo"
         file_name = "photo.jpg"
@@ -297,7 +339,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = file_obj.file_size
         mime_type = file_obj.mime_type
     else:
-        return
+        return  # không phải file thì bỏ qua
 
     file_unique_id = file_obj.file_unique_id
     file_id = file_obj.file_id
@@ -330,8 +372,8 @@ async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        logger.error("Chưa thiết lập biến môi trường BOT_TOKEN")
-        raise SystemExit("Please set BOT_TOKEN env variable")
+        logger.error("Chưa thiết lập biến môi trường BOT_TOKEN hoặc Token")
+        raise SystemExit("Please set BOT_TOKEN or Token env variable")
 
     init_db()
     logger.info("Database đã sẵn sàng: %s", DB_PATH)
@@ -350,7 +392,6 @@ def main():
         | filters.AUDIO
     )
     app.add_handler(MessageHandler(file_filter, handle_file))
-
     app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
 
     logger.info("Bot đang chạy...")
