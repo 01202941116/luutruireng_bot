@@ -25,9 +25,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# phiên bản mới: share dạng album + tên thư mục + mật khẩu
-APP_VERSION = "v6-folder-password"
-MEDIA_GROUP_SIZE = 3  # muốn 10 file/lần thì đổi thành 10
+# phiên bản mới: share dạng album + hiện tên thư mục + mật khẩu
+APP_VERSION = "v6-mediagroup-folder-pass"
+MEDIA_GROUP_SIZE = 3  # muốn 10 cái 1 lần thì đổi thành 10
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -83,6 +83,12 @@ def init_db():
         )
     """)
 
+    # đảm bảo cột password tồn tại trong bảng folders (nếu DB cũ)
+    cur.execute("PRAGMA table_info(folders)")
+    cols = [row[1] for row in cur.fetchall()]
+    if "password" not in cols:
+        cur.execute("ALTER TABLE folders ADD COLUMN password TEXT")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_current_folder (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,12 +122,6 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
-    # đảm bảo cột password tồn tại trong bảng folders
-    cur.execute("PRAGMA table_info(folders)")
-    cols = [row[1] for row in cur.fetchall()]
-    if "password" not in cols:
-        cur.execute("ALTER TABLE folders ADD COLUMN password TEXT")
 
     conn.commit()
     conn.close()
@@ -362,12 +362,12 @@ WELCOME_TEXT = (
     "👉 Bấm *📁 Tạo thư mục mới* để tạo thư mục.\n"
     "👉 Dùng /upload để gửi file.\n"
     "👉 Dùng /getlink để lấy link chia sẻ.\n"
-    "👉 Dùng /setpass <mật_khẩu> để đặt mật khẩu cho thư mục hiện tại,\n"
+    "👉 Dùng /setpass <mật_khẩu> để đặt mật khẩu cho thư mục hiện tại\n"
     "   hoặc /setpass off để tắt mật khẩu.\n"
 )
 
 
-# ========================= UTIL: gửi thư mục được chia sẻ =========================
+# ========================= UTIL: gửi file chia sẻ =========================
 
 async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
                                    context: ContextTypes.DEFAULT_TYPE):
@@ -391,6 +391,7 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
             f"Bot sẽ gửi file theo lố {MEDIA_GROUP_SIZE} cái một lần."
         ),
         parse_mode="Markdown",
+        reply_markup=get_main_keyboard(),
     )
 
     batch = []
@@ -417,10 +418,13 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
 
             if count_in_batch >= MEDIA_GROUP_SIZE:
                 try:
-                    await context.bot.send_media_group(chat_id=chat_id, media=batch)
+                    await context.bot.send_media_group(
+                        chat_id=chat_id,
+                        media=batch,
+                    )
                 except Exception as e:
                     logger.exception("Lỗi khi gửi media group: %s", e)
-                    # fallback: gửi từng file
+                    # fallback: gửi từng cái
                     for m in batch:
                         try:
                             if isinstance(m, InputMediaVideo):
@@ -433,7 +437,7 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
                                 await context.bot.send_photo(
                                     chat_id=chat_id,
                                     photo=m.media,
-                                    caption	m.caption,
+                                    caption=m.caption,
                                 )
                             elif isinstance(m, InputMediaDocument):
                                 await context.bot.send_document(
@@ -456,7 +460,10 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
 
     if batch:
         try:
-            await context.bot.send_media_group(chat_id=chat_id, media=batch)
+            await context.bot.send_media_group(
+                chat_id=chat_id,
+                media=batch,
+            )
         except Exception as e:
             logger.exception("Lỗi khi gửi media group cuối: %s", e)
             for m in batch:
@@ -485,9 +492,6 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
 
 # ========================= HANDLERS =========================
 
-PASS_WAIT_USERS = {}
-
-
 async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Bot version: {APP_VERSION}")
 
@@ -502,9 +506,15 @@ async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start
+    - Nếu có arg share_xxx: kiểm tra mật khẩu (nếu có), rồi gửi file theo lố.
+    - Nếu không: hiển thị màn hình chào.
+    """
     user = update.effective_user
     get_or_create_user(user)
 
+    # reset trạng thái chờ pass nếu user gõ lại /start
     PASS_WAIT_USERS.pop(user.id, None)
 
     args = context.args
@@ -526,6 +536,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             folder_pass = folder["password"]
 
             if folder_pass and folder_pass.strip():
+                # yêu cầu nhập mật khẩu
                 PASS_WAIT_USERS[user.id] = (owner_id, folder_id)
                 await update.message.reply_text(
                     f"🔐 Thư mục *{folder_name}* đã được đặt mật khẩu.\n"
@@ -535,6 +546,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            # không có pass => gửi file luôn
             await send_shared_folder_files(
                 chat_id=update.effective_chat.id,
                 owner_id=owner_id,
@@ -543,6 +555,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    # Không có share_: hiển thị welcome
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
@@ -576,6 +589,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
+    # 1) đang ở trạng thái yêu cầu nhập mật khẩu share_
     if user.id in PASS_WAIT_USERS and not text.startswith("/"):
         owner_id, folder_id = PASS_WAIT_USERS[user.id]
         folder = get_folder_by_id(folder_id)
@@ -609,6 +623,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # 2) đang chờ tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -721,6 +736,7 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setpass_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Đặt / tắt mật khẩu cho thư mục hiện tại."""
     user = update.effective_user
     folder = ensure_current_folder(user.id)
 
@@ -822,12 +838,7 @@ def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ Chưa thiết lập BOT_TOKEN hoặc Token.")
 
-    # nếu DB lỗi sẽ log ra, tránh im lặng
-    try:
-        init_db()
-    except Exception as e:
-        logger.exception("❌ Lỗi khi khởi tạo database: %s", e)
-        # vẫn cho bot chạy, nhưng có thể các lệnh khác sẽ lỗi
+    init_db()
     logger.info("Bot started.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
