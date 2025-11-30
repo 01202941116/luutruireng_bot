@@ -1,8 +1,9 @@
 import logging
 import os
-import sqlite3
 import secrets
 
+import psycopg2
+import psycopg2.extras
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,10 +16,13 @@ from telegram.ext import (
 # ========================= CONFIG =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
-DB_PATH = os.getenv("DB_PATH", "bot_data.db")
+
+# Lấy chuỗi kết nối Postgres từ Railway
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-APP_VERSION = "v3-getlink-fix"  # dùng để check code đã lên chưa
+APP_VERSION = "v3-getlink-fix-pg"  # dùng để check code đã lên chưa
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -41,11 +45,17 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-# ========================= DATABASE =========================
+# ========================= DATABASE (POSTGRES) =========================
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    """
+    Kết nối Postgres dùng DATABASE_URL.
+    Dùng RealDictCursor để row trả về có thể truy cập kiểu row["field"].
+    """
+    if not DATABASE_URL:
+        raise RuntimeError("❌ Chưa thiết lập biến môi trường DATABASE_URL")
+
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 
@@ -53,80 +63,81 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
+    # Lưu ý: dùng SERIAL cho Postgres, placeholder là %s
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER UNIQUE,
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT UNIQUE,
             full_name TEXT,
             username TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_telegram_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            owner_telegram_id BIGINT,
             name TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_current_folder (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_telegram_id INTEGER UNIQUE,
+            id SERIAL PRIMARY KEY,
+            owner_telegram_id BIGINT UNIQUE,
             folder_id INTEGER,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             file_unique_id TEXT UNIQUE,
             file_id TEXT,
-            owner_telegram_id INTEGER,
+            owner_telegram_id BIGINT,
             folder_id INTEGER,
             file_name TEXT,
             file_type TEXT,
-            file_size INTEGER,
+            file_size BIGINT,
             mime_type TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS share_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_telegram_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            owner_telegram_id BIGINT,
             folder_id INTEGER,
             token TEXT UNIQUE,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     conn.commit()
     conn.close()
-    logger.info("Database OK.")
+    logger.info("Database (Postgres) OK.")
 
 
 def get_or_create_user(tg_user):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_user.id,))
+    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (tg_user.id,))
     row = cur.fetchone()
     if row:
         conn.close()
         return row
 
     cur.execute(
-        "INSERT INTO users (telegram_id, full_name, username) VALUES (?, ?, ?)",
+        "INSERT INTO users (telegram_id, full_name, username) VALUES (%s, %s, %s)",
         (tg_user.id, tg_user.full_name, tg_user.username),
     )
     conn.commit()
-    cur.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_user.id,))
+    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (tg_user.id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -137,7 +148,7 @@ def create_or_get_folder(owner_id, name):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT * FROM folders WHERE owner_telegram_id = ? AND name = ?",
+        "SELECT * FROM folders WHERE owner_telegram_id = %s AND name = %s",
         (owner_id, name),
     )
     row = cur.fetchone()
@@ -146,13 +157,13 @@ def create_or_get_folder(owner_id, name):
         return row
 
     cur.execute(
-        "INSERT INTO folders (owner_telegram_id, name) VALUES (?, ?)",
+        "INSERT INTO folders (owner_telegram_id, name) VALUES (%s, %s)",
         (owner_id, name),
     )
     conn.commit()
 
     cur.execute(
-        "SELECT * FROM folders WHERE owner_telegram_id = ? AND name = ?",
+        "SELECT * FROM folders WHERE owner_telegram_id = %s AND name = %s",
         (owner_id, name),
     )
     row = cur.fetchone()
@@ -167,10 +178,10 @@ def set_current_folder(owner_id, folder_id):
     cur.execute(
         """
         INSERT INTO user_current_folder (owner_telegram_id, folder_id, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(owner_telegram_id) DO UPDATE SET
-            folder_id = excluded.folder_id,
-            updated_at = excluded.updated_at
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (owner_telegram_id) DO UPDATE SET
+            folder_id = EXCLUDED.folder_id,
+            updated_at = EXCLUDED.updated_at
         """,
         (owner_id, folder_id),
     )
@@ -187,7 +198,7 @@ def get_current_folder(owner_id):
         SELECT f.*
         FROM user_current_folder u
         JOIN folders f ON f.id = u.folder_id
-        WHERE u.owner_telegram_id = ?
+        WHERE u.owner_telegram_id = %s
         """,
         (owner_id,),
     )
@@ -210,7 +221,7 @@ def list_folders(owner_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM folders WHERE owner_telegram_id = ? ORDER BY created_at DESC",
+        "SELECT * FROM folders WHERE owner_telegram_id = %s ORDER BY created_at DESC",
         (owner_id,),
     )
     rows = cur.fetchall()
@@ -224,10 +235,11 @@ def save_file(owner_id, folder_id, file_unique_id, file_id,
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT OR IGNORE INTO files
+        INSERT INTO files
         (file_unique_id, file_id, owner_telegram_id, folder_id,
          file_name, file_type, file_size, mime_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (file_unique_id) DO NOTHING
         """,
         (
             file_unique_id,
@@ -251,7 +263,7 @@ def get_share_token(owner_id, folder_id):
     cur.execute(
         """
         SELECT token FROM share_tokens
-        WHERE owner_telegram_id = ? AND folder_id = ?
+        WHERE owner_telegram_id = %s AND folder_id = %s
         """,
         (owner_id, folder_id),
     )
@@ -264,7 +276,7 @@ def get_share_token(owner_id, folder_id):
     cur.execute(
         """
         INSERT INTO share_tokens (owner_telegram_id, folder_id, token)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (owner_id, folder_id, token),
     )
@@ -278,7 +290,7 @@ def get_owner_and_folder_by_token(token):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT owner_telegram_id, folder_id FROM share_tokens WHERE token = ?",
+        "SELECT owner_telegram_id, folder_id FROM share_tokens WHERE token = %s",
         (token,),
     )
     row = cur.fetchone()
@@ -295,9 +307,9 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
         cur.execute(
             """
             SELECT * FROM files
-            WHERE owner_telegram_id = ? AND folder_id = ?
+            WHERE owner_telegram_id = %s AND folder_id = %s
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_id, folder_id, limit),
         )
@@ -305,9 +317,9 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
         cur.execute(
             """
             SELECT * FROM files
-            WHERE owner_telegram_id = ?
+            WHERE owner_telegram_id = %s
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_id, limit),
         )
@@ -321,7 +333,7 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
 WELCOME_TEXT = (
     "🌤 *Bot Lưu Trữ File*\n\n"
     "• Lưu hình ảnh, video, tài liệu, file bất kỳ.\n"
-    "• Không lo mất dữ liệu.\n\n"
+    "• Không lo mất dữ liệu (Postgres trên Railway).\n\n"
     "👉 Bấm *📁 Tạo thư mục mới* để tạo thư mục.\n"
     "👉 Dùng /upload để gửi file.\n"
     "👉 Dùng /getlink để lấy link chia sẻ.\n"
@@ -502,9 +514,7 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
 
-    # 🔥 CHỈ DÙNG USERNAME THẬT LẤY TỪ TELEGRAM
     real_username = context.bot.username  # ví dụ: 'luutruireng_bot'
-
     link = f"https://t.me/{real_username}?start=share_{token}"
 
     await update.message.reply_text(
@@ -583,9 +593,11 @@ async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ Chưa thiết lập BOT_TOKEN hoặc Token.")
+    if not DATABASE_URL:
+        raise SystemExit("❌ Chưa thiết lập DATABASE_URL cho Postgres.")
 
     init_db()
-    logger.info("Bot started.")
+    logger.info("Bot started with PostgreSQL.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
