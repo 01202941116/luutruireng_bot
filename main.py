@@ -1,8 +1,9 @@
 import logging
 import os
-import sqlite3
 import secrets
 
+import psycopg2
+import psycopg2.extras
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -22,12 +23,14 @@ from telegram.ext import (
 # ========================= CONFIG =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("Token")
-DB_PATH = os.getenv("DB_PATH", "bot_data.db")
+
+# Railway: DATABASE_URL = ${Postgres.DATABASE_URL}
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# phiên bản mới: share dạng album + tên thư mục + mật khẩu + whitelist
-APP_VERSION = "v7-mediagroup-folder-pass-whitelist"
-MEDIA_GROUP_SIZE = 3  # muốn 10 cái 1 lần thì đổi thành 10
+APP_VERSION = "v7-mediagroup-folder-pass-whitelist-pg"
+MEDIA_GROUP_SIZE = 3  # muốn 10 file 1 lần thì đổi thành 10
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -52,11 +55,15 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-# ========================= DATABASE =========================
+# ========================= DATABASE (POSTGRES) =========================
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    if not DATABASE_URL:
+        raise RuntimeError("❌ Chưa thiết lập DATABASE_URL")
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )
     return conn
 
 
@@ -64,96 +71,102 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
+    # USERS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER UNIQUE,
-            full_name TEXT,
-            username TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
+            id              SERIAL PRIMARY KEY,
+            telegram_id     BIGINT UNIQUE,
+            full_name       TEXT,
+            username        TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
+    # FOLDERS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_telegram_id INTEGER,
-            name TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
+            id               SERIAL PRIMARY KEY,
+            owner_telegram_id BIGINT,
+            name             TEXT,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
-    # đảm bảo cột password tồn tại trong bảng folders (nếu DB cũ)
-    cur.execute("PRAGMA table_info(folders)")
-    cols = [row[1] for row in cur.fetchall()]
-    if "password" not in cols:
-        cur.execute("ALTER TABLE folders ADD COLUMN password TEXT")
+    # thêm cột password nếu chưa có
+    cur.execute("""
+        ALTER TABLE folders
+        ADD COLUMN IF NOT EXISTS password TEXT;
+    """)
 
+    # CURRENT FOLDER
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_current_folder (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_telegram_id INTEGER UNIQUE,
-            folder_id INTEGER,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
+            id               SERIAL PRIMARY KEY,
+            owner_telegram_id BIGINT UNIQUE,
+            folder_id        INTEGER,
+            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
+    # FILES
     cur.execute("""
         CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_unique_id TEXT UNIQUE,
-            file_id TEXT,
-            owner_telegram_id INTEGER,
-            folder_id INTEGER,
-            file_name TEXT,
-            file_type TEXT,
-            file_size INTEGER,
-            mime_type TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
+            id               SERIAL PRIMARY KEY,
+            file_unique_id   TEXT UNIQUE,
+            file_id          TEXT,
+            owner_telegram_id BIGINT,
+            folder_id        INTEGER,
+            file_name        TEXT,
+            file_type        TEXT,
+            file_size        BIGINT,
+            mime_type        TEXT,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
+    # SHARE TOKENS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS share_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_telegram_id INTEGER,
-            folder_id INTEGER,
-            token TEXT UNIQUE,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
+            id               SERIAL PRIMARY KEY,
+            owner_telegram_id BIGINT,
+            folder_id        INTEGER,
+            token            TEXT UNIQUE,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
-    # bảng whitelist user được phép dùng bot
+    # WHITELIST
     cur.execute("""
         CREATE TABLE IF NOT EXISTS allowed_users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER UNIQUE,
-            added_by INTEGER,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
+            id          SERIAL PRIMARY KEY,
+            telegram_id BIGINT UNIQUE,
+            added_by    BIGINT,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
 
     conn.commit()
     conn.close()
-    logger.info("Database OK (có password + whitelist).")
+    logger.info("Database OK (PostgreSQL, password + whitelist).")
 
 
 def get_or_create_user(tg_user):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_user.id,))
+    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (tg_user.id,))
     row = cur.fetchone()
     if row:
         conn.close()
         return row
 
     cur.execute(
-        "INSERT INTO users (telegram_id, full_name, username) VALUES (?, ?, ?)",
+        "INSERT INTO users (telegram_id, full_name, username) VALUES (%s, %s, %s)",
         (tg_user.id, tg_user.full_name, tg_user.username),
     )
     conn.commit()
-    cur.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_user.id,))
+
+    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (tg_user.id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -164,7 +177,7 @@ def create_or_get_folder(owner_id, name):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT * FROM folders WHERE owner_telegram_id = ? AND name = ?",
+        "SELECT * FROM folders WHERE owner_telegram_id = %s AND name = %s",
         (owner_id, name),
     )
     row = cur.fetchone()
@@ -173,13 +186,13 @@ def create_or_get_folder(owner_id, name):
         return row
 
     cur.execute(
-        "INSERT INTO folders (owner_telegram_id, name) VALUES (?, ?)",
+        "INSERT INTO folders (owner_telegram_id, name) VALUES (%s, %s)",
         (owner_id, name),
     )
     conn.commit()
 
     cur.execute(
-        "SELECT * FROM folders WHERE owner_telegram_id = ? AND name = ?",
+        "SELECT * FROM folders WHERE owner_telegram_id = %s AND name = %s",
         (owner_id, name),
     )
     row = cur.fetchone()
@@ -194,10 +207,10 @@ def set_current_folder(owner_id, folder_id):
     cur.execute(
         """
         INSERT INTO user_current_folder (owner_telegram_id, folder_id, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(owner_telegram_id) DO UPDATE SET
-            folder_id = excluded.folder_id,
-            updated_at = excluded.updated_at
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (owner_telegram_id) DO UPDATE SET
+            folder_id = EXCLUDED.folder_id,
+            updated_at = EXCLUDED.updated_at;
         """,
         (owner_id, folder_id),
     )
@@ -208,13 +221,12 @@ def set_current_folder(owner_id, folder_id):
 def get_current_folder(owner_id):
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute(
         """
         SELECT f.*
         FROM user_current_folder u
         JOIN folders f ON f.id = u.folder_id
-        WHERE u.owner_telegram_id = ?
+        WHERE u.owner_telegram_id = %s;
         """,
         (owner_id,),
     )
@@ -227,7 +239,6 @@ def ensure_current_folder(owner_id):
     folder = get_current_folder(owner_id)
     if folder:
         return folder
-
     folder = create_or_get_folder(owner_id, "Mặc định")
     set_current_folder(owner_id, folder["id"])
     return folder
@@ -237,7 +248,7 @@ def list_folders(owner_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM folders WHERE owner_telegram_id = ? ORDER BY created_at DESC",
+        "SELECT * FROM folders WHERE owner_telegram_id = %s ORDER BY created_at DESC",
         (owner_id,),
     )
     rows = cur.fetchall()
@@ -248,7 +259,7 @@ def list_folders(owner_id):
 def get_folder_by_id(folder_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    cur.execute("SELECT * FROM folders WHERE id = %s", (folder_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -258,7 +269,7 @@ def update_folder_password(folder_id, password):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE folders SET password = ? WHERE id = ?",
+        "UPDATE folders SET password = %s WHERE id = %s",
         (password, folder_id),
     )
     conn.commit()
@@ -271,10 +282,11 @@ def save_file(owner_id, folder_id, file_unique_id, file_id,
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT OR IGNORE INTO files
+        INSERT INTO files
         (file_unique_id, file_id, owner_telegram_id, folder_id,
          file_name, file_type, file_size, mime_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (file_unique_id) DO NOTHING;
         """,
         (
             file_unique_id,
@@ -298,7 +310,7 @@ def get_share_token(owner_id, folder_id):
     cur.execute(
         """
         SELECT token FROM share_tokens
-        WHERE owner_telegram_id = ? AND folder_id = ?
+        WHERE owner_telegram_id = %s AND folder_id = %s
         """,
         (owner_id, folder_id),
     )
@@ -311,7 +323,7 @@ def get_share_token(owner_id, folder_id):
     cur.execute(
         """
         INSERT INTO share_tokens (owner_telegram_id, folder_id, token)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (owner_id, folder_id, token),
     )
@@ -325,7 +337,7 @@ def get_owner_and_folder_by_token(token):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT owner_telegram_id, folder_id FROM share_tokens WHERE token = ?",
+        "SELECT owner_telegram_id, folder_id FROM share_tokens WHERE token = %s",
         (token,),
     )
     row = cur.fetchone()
@@ -342,9 +354,9 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
         cur.execute(
             """
             SELECT * FROM files
-            WHERE owner_telegram_id = ? AND folder_id = ?
+            WHERE owner_telegram_id = %s AND folder_id = %s
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_id, folder_id, limit),
         )
@@ -352,9 +364,9 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
         cur.execute(
             """
             SELECT * FROM files
-            WHERE owner_telegram_id = ?
+            WHERE owner_telegram_id = %s
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_id, limit),
         )
@@ -366,14 +378,12 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
 # ============ WHITELIST ============
 
 def is_user_allowed(user_id: int) -> bool:
-    """Cho phép OWNER luôn, còn lại phải có trong allowed_users."""
     if OWNER_ID and user_id == OWNER_ID:
         return True
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT 1 FROM allowed_users WHERE telegram_id = ?",
+        "SELECT 1 AS ok FROM allowed_users WHERE telegram_id = %s",
         (user_id,),
     )
     row = cur.fetchone()
@@ -386,8 +396,9 @@ def add_allowed_user(user_id: int, added_by: int):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT OR IGNORE INTO allowed_users (telegram_id, added_by)
-        VALUES (?, ?)
+        INSERT INTO allowed_users (telegram_id, added_by)
+        VALUES (%s, %s)
+        ON CONFLICT (telegram_id) DO NOTHING
         """,
         (user_id, added_by),
     )
@@ -396,18 +407,15 @@ def add_allowed_user(user_id: int, added_by: int):
 
 
 async def ensure_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Kiểm tra quyền dùng bot. Trả về True nếu OK, False nếu bị chặn."""
     user = update.effective_user
     chat_id = update.effective_chat.id
 
-    # cho OWNER dùng luôn
     if OWNER_ID and user.id == OWNER_ID:
         return True
 
     if is_user_allowed(user.id):
         return True
 
-    # người lạ → thông báo ID cho họ gửi admin
     try:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -420,7 +428,6 @@ async def ensure_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
     except Exception as e:
         logger.exception("Lỗi gửi thông báo không có quyền: %s", e)
-
     return False
 
 
@@ -429,7 +436,7 @@ async def ensure_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 WELCOME_TEXT = (
     "🌤 *Bot Lưu Trữ File*\n\n"
     "• Lưu hình ảnh, video, tài liệu, file bất kỳ.\n"
-    "• Không lo mất dữ liệu.\n\n"
+    "• Dữ liệu lưu trên PostgreSQL – không lo mất.\n\n"
     "👉 Bấm *📁 Tạo thư mục mới* để tạo thư mục.\n"
     "👉 Dùng /upload để gửi file.\n"
     "👉 Dùng /getlink để lấy link chia sẻ.\n"
@@ -489,10 +496,7 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
 
             if count_in_batch >= MEDIA_GROUP_SIZE:
                 try:
-                    await context.bot.send_media_group(
-                        chat_id=chat_id,
-                        media=batch,
-                    )
+                    await context.bot.send_media_group(chat_id=chat_id, media=batch)
                 except Exception as e:
                     logger.exception("Lỗi khi gửi media group: %s", e)
                     # fallback: gửi từng cái
@@ -500,15 +504,11 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
                         try:
                             if isinstance(m, InputMediaVideo):
                                 await context.bot.send_video(
-                                    chat_id=chat_id,
-                                    video=m.media,
-                                    caption=m.caption,
+                                    chat_id=chat_id, video=m.media, caption=m.caption
                                 )
                             elif isinstance(m, InputMediaPhoto):
                                 await context.bot.send_photo(
-                                    chat_id=chat_id,
-                                    photo=m.media,
-                                    caption=m.caption,
+                                    chat_id=chat_id, photo=m.media, caption=m.caption
                                 )
                             elif isinstance(m, InputMediaDocument):
                                 await context.bot.send_document(
@@ -531,25 +531,18 @@ async def send_shared_folder_files(chat_id: int, owner_id: int, folder_id: int,
 
     if batch:
         try:
-            await context.bot.send_media_group(
-                chat_id=chat_id,
-                media=batch,
-            )
+            await context.bot.send_media_group(chat_id=chat_id, media=batch)
         except Exception as e:
             logger.exception("Lỗi khi gửi media group cuối: %s", e)
             for m in batch:
                 try:
                     if isinstance(m, InputMediaVideo):
                         await context.bot.send_video(
-                            chat_id=chat_id,
-                            video=m.media,
-                            caption=m.caption,
+                            chat_id=chat_id, video=m.media, caption=m.caption
                         )
                     elif isinstance(m, InputMediaPhoto):
                         await context.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=m.media,
-                            caption=m.caption,
+                            chat_id=chat_id, photo=m.media, caption=m.caption
                         )
                     elif isinstance(m, InputMediaDocument):
                         await context.bot.send_document(
@@ -577,7 +570,6 @@ async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Chỉ OWNER dùng: /allow <telegram_id> để thêm người vào whitelist."""
     user = update.effective_user
     if OWNER_ID and user.id != OWNER_ID:
         await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
@@ -605,21 +597,15 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /start
-    - Nếu có arg share_xxx: kiểm tra mật khẩu (nếu có), rồi gửi file theo lố.
-      (KHÔNG cần whitelist, ai cũng xem được khi có link)
-    - Nếu không: hiển thị màn hình chào (có check whitelist).
-    """
     user = update.effective_user
     get_or_create_user(user)
 
-    # reset trạng thái chờ pass nếu user gõ lại /start
     PASS_WAIT_USERS.pop(user.id, None)
 
-    args = context.args
+    if not await ensure_allowed(update, context):
+        return
 
-    # ----- NHÁNH share_ (CHO XEM TỰ DO, KHÔNG CHECK WHITELIST) -----
+    args = context.args
     if args:
         arg = args[0]
         if arg.startswith("share_"):
@@ -638,7 +624,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             folder_pass = folder["password"]
 
             if folder_pass and folder_pass.strip():
-                # yêu cầu nhập mật khẩu
                 PASS_WAIT_USERS[user.id] = (owner_id, folder_id)
                 await update.message.reply_text(
                     f"🔐 Thư mục *{folder_name}* đã được đặt mật khẩu.\n"
@@ -648,7 +633,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # không có pass => gửi file luôn
             await send_shared_folder_files(
                 chat_id=update.effective_chat.id,
                 owner_id=owner_id,
@@ -656,10 +640,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context=context,
             )
             return
-
-    # ----- KHÔNG share_ → phải qua whitelist -----
-    if not await ensure_allowed(update, context):
-        return
 
     await update.message.reply_text(
         WELCOME_TEXT,
@@ -696,11 +676,13 @@ async def new_folder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     text = update.message.text.strip()
 
-    # 1) đang ở trạng thái yêu cầu nhập mật khẩu share_
-    #    (cho phép nhập pass KỂ CẢ KHI KHÔNG NẰM TRONG WHITELIST)
+    # 1) đang nhập mật khẩu share_
     if user.id in PASS_WAIT_USERS and not text.startswith("/"):
         owner_id, folder_id = PASS_WAIT_USERS[user.id]
         folder = get_folder_by_id(folder_id)
@@ -734,11 +716,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # 2) các text còn lại → phải qua whitelist
-    if not await ensure_allowed(update, context):
-        return
-
-    # 3) đang chờ tên thư mục mới
+    # 2) đang chờ tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -821,9 +799,7 @@ async def myfiles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = [
-        f"📂 30 file mới nhất trong thư mục {folder['name']}:\n"
-    ]
+    lines = [f"📂 30 file mới nhất trong thư mục {folder['name']}:\n"]
     for f in files:
         lines.append(f"• {f['file_name']} — {f['file_size']} bytes")
 
@@ -841,7 +817,7 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = ensure_current_folder(user.id)
     token = get_share_token(user.id, folder["id"])
 
-    real_username = "luutruireng_bot"
+    real_username = os.getenv("BOT_USERNAME") or context.bot.username
     link = f"https://t.me/{real_username}?start=share_{token}"
 
     text = (
@@ -858,7 +834,6 @@ async def getlink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setpass_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Đặt / tắt mật khẩu cho thư mục hiện tại."""
     if not await ensure_allowed(update, context):
         return
 
@@ -949,7 +924,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # vẫn check quyền, tránh người lạ spam
     if not await ensure_allowed(update, context):
         return
 
@@ -965,9 +939,11 @@ async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ Chưa thiết lập BOT_TOKEN hoặc Token.")
+    if not DATABASE_URL:
+        raise SystemExit("❌ Chưa thiết lập DATABASE_URL.")
 
     init_db()
-    logger.info("Bot started.")
+    logger.info("Bot started with PostgreSQL.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
