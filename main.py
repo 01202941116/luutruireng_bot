@@ -608,7 +608,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /start
     - Nếu có arg share_xxx: kiểm tra mật khẩu (nếu có), rồi gửi file theo lố.
-    - Nếu không: hiển thị màn hình chào.
+      (KHÔNG cần whitelist, ai cũng xem được khi có link)
+    - Nếu không: hiển thị màn hình chào (có check whitelist).
     """
     user = update.effective_user
     get_or_create_user(user)
@@ -616,11 +617,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # reset trạng thái chờ pass nếu user gõ lại /start
     PASS_WAIT_USERS.pop(user.id, None)
 
-    # kiểm tra quyền dùng bot
-    if not await ensure_allowed(update, context):
-        return
-
     args = context.args
+
+    # ----- NHÁNH share_ (CHO XEM TỰ DO, KHÔNG CHECK WHITELIST) -----
     if args:
         arg = args[0]
         if arg.startswith("share_"):
@@ -658,7 +657,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # Không có share_: hiển thị welcome
+    # ----- KHÔNG share_ → phải qua whitelist -----
+    if not await ensure_allowed(update, context):
+        return
+
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
@@ -694,13 +696,11 @@ async def new_folder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_allowed(update, context):
-        return
-
     user = update.effective_user
     text = update.message.text.strip()
 
     # 1) đang ở trạng thái yêu cầu nhập mật khẩu share_
+    #    (cho phép nhập pass KỂ CẢ KHI KHÔNG NẰM TRONG WHITELIST)
     if user.id in PASS_WAIT_USERS and not text.startswith("/"):
         owner_id, folder_id = PASS_WAIT_USERS[user.id]
         folder = get_folder_by_id(folder_id)
@@ -734,7 +734,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # 2) đang chờ tên thư mục mới
+    # 2) các text còn lại → phải qua whitelist
+    if not await ensure_allowed(update, context):
+        return
+
+    # 3) đang chờ tên thư mục mới
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
@@ -746,7 +750,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📁 Đã tạo / chọn thư mục: *{text}*\n"
             "➡ Bây giờ hãy gửi file cho bot.",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
         )
         return
 
