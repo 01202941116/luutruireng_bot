@@ -600,12 +600,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user)
 
+    # reset trạng thái chờ nhập mật khẩu
     PASS_WAIT_USERS.pop(user.id, None)
 
-    if not await ensure_allowed(update, context):
-        return
+    args = context.args or []
 
-    args = context.args
+    # 🔹 Nếu có share_ → cho xem, KHÔNG kiểm tra whitelist
     if args:
         arg = args[0]
         if arg.startswith("share_"):
@@ -623,6 +623,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             folder_name = folder["name"]
             folder_pass = folder["password"]
 
+            # có mật khẩu → yêu cầu nhập
             if folder_pass and folder_pass.strip():
                 PASS_WAIT_USERS[user.id] = (owner_id, folder_id)
                 await update.message.reply_text(
@@ -633,6 +634,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            # không có mật khẩu → gửi file luôn
             await send_shared_folder_files(
                 chat_id=update.effective_chat.id,
                 owner_id=owner_id,
@@ -640,6 +642,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context=context,
             )
             return
+
+    # 🔹 /start bình thường (không share_) → phải qua whitelist
+    if not await ensure_allowed(update, context):
+        return
 
     await update.message.reply_text(
         WELCOME_TEXT,
@@ -676,13 +682,11 @@ async def new_folder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_allowed(update, context):
-        return
-
     user = update.effective_user
     text = update.message.text.strip()
 
-    # 1) đang nhập mật khẩu share_
+    # 1) ĐANG NHẬP MẬT KHẨU CHO LINK share_
+    #    → KHÔNG kiểm tra whitelist
     if user.id in PASS_WAIT_USERS and not text.startswith("/"):
         owner_id, folder_id = PASS_WAIT_USERS[user.id]
         folder = get_folder_by_id(folder_id)
@@ -716,7 +720,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # 2) đang chờ tên thư mục mới
+    # 2) Các trường hợp còn lại mới cần check whitelist
+    if not await ensure_allowed(update, context):
+        return
+
+    # 3) ĐANG CHỜ TÊN THƯ MỤC MỚI
     if user.id in FOLDER_NAME_WAIT_USERS and not text.startswith("/"):
         FOLDER_NAME_WAIT_USERS.remove(user.id)
 
