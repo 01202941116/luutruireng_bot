@@ -184,6 +184,18 @@ def get_or_create_user(tg_user):
     return row
 
 
+def get_all_user_ids():
+    """
+    Lấy toàn bộ telegram_id của user đã từng start bot.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT telegram_id FROM users;")
+    rows = cur.fetchall()
+    conn.close()
+    return [r["telegram_id"] for r in rows]
+
+
 def create_or_get_folder(owner_id, name):
     conn = get_conn()
     cur = conn.cursor()
@@ -392,17 +404,17 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
 def create_ad(chat_id: int, message_id: int, content: str) -> str:
     """
     Tạo bản ghi quảng cáo, trả về code dạng qc1, qc2...
+    content: nội dung QUẢNG CÁO (không có prefix [QC qc1])
     """
     conn = get_conn()
     cur = conn.cursor()
-    # tạo bản ghi chưa có code (NULL), tránh trùng UNIQUE
     cur.execute(
         """
-        INSERT INTO ads (chat_id, message_id, content)
-        VALUES (%s, %s, %s)
+        INSERT INTO ads (code, chat_id, message_id, content)
+        VALUES (%s, %s, %s, %s)
         RETURNING id;
         """,
-        (chat_id, message_id, content),
+        ("", chat_id, message_id, content),
     )
     row = cur.fetchone()
     ad_id = row["id"]
@@ -436,6 +448,18 @@ def delete_ad(code: str, chat_id: int) -> bool:
     conn.commit()
     conn.close()
     return deleted
+
+
+def get_latest_ad():
+    """
+    Lấy quảng cáo mới nhất (dùng cho user mới /start).
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM ads ORDER BY id DESC LIMIT 1;")
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 # ============ WHITELIST ============
@@ -662,7 +686,10 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /ad Nội dung quảng cáo
-    Chỉ OWNER dùng. Bot gửi tin, sửa text cho có mã qc1, qc2..., ghim message.
+    Chỉ OWNER dùng.
+    - Bot gửi tin trong chat của owner, ghim.
+    - Lưu DB (mã qc1, qc2...)
+    - Gửi + ghim QC đó cho TẤT CẢ user đã từng dùng bot.
     """
     user = update.effective_user
     chat = update.effective_chat
@@ -677,20 +704,20 @@ async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ad_text = " ".join(context.args).strip()
 
-    # gửi tin quảng cáo
+    # 1) gửi tin quảng cáo ở chat hiện tại (thường là chat với OWNER)
     msg = await chat.send_message(ad_text)
 
-    # lưu vào DB, sinh mã qc1, qc2...
+    # 2) lưu vào DB, sinh mã qc1, qc2...
     code = create_ad(chat.id, msg.message_id, ad_text)
 
-    # sửa lại nội dung để có mã qc ở đầu
+    # 3) sửa lại nội dung để có mã qc ở đầu
+    final_text = f"[QC {code}] {ad_text}"
     try:
-        new_text = f"[QC {code}] {ad_text}"
-        await msg.edit_text(new_text)
+        await msg.edit_text(final_text)
     except Exception as e:
         logger.exception("Không edit được nội dung QC: %s", e)
 
-    # ghim tin
+    # 4) ghim tin trong chat của OWNER
     try:
         await context.bot.pin_chat_message(
             chat_id=chat.id,
@@ -698,7 +725,26 @@ async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_notification=True,
         )
     except Exception as e:
-        logger.exception("Không ghim được QC: %s", e)
+        logger.exception("Không ghim được QC ở chat owner: %s", e)
+
+    # 5) GỬI & GHIM TỚI TẤT CẢ USER ĐÃ TỪNG DÙNG BOT
+    all_user_ids = get_all_user_ids()
+    for uid in all_user_ids:
+        # đã có rồi trong bước 4
+        if uid == chat.id:
+            continue
+        try:
+            sent = await context.bot.send_message(chat_id=uid, text=final_text)
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=uid,
+                    message_id=sent.message_id,
+                    disable_notification=True,
+                )
+            except Exception as e_pin:
+                logger.exception("Không ghim được QC ở user %s: %s", uid, e_pin)
+        except Exception as e_send:
+            logger.exception("Không gửi QC tới user %s: %s", uid, e_send)
 
     await update.message.reply_text(f"✅ Đã đăng & ghim quảng cáo với mã: {code}")
 
@@ -706,6 +752,7 @@ async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /delad qc1  hoặc  /delad 1  (hiểu là qc1)
+    -> chỉ xoá & bỏ ghim QC ở chat owner (không broadcast xóa).
     """
     user = update.effective_user
     chat = update.effective_chat
@@ -733,7 +780,7 @@ async def delad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg_id = ad["message_id"]
 
-    # bỏ ghim + xoá message nếu được
+    # bỏ ghim + xoá message nếu được (chỉ ở chat này)
     try:
         await context.bot.unpin_chat_message(chat_id=chat.id, message_id=msg_id)
     except Exception as e:
@@ -746,7 +793,7 @@ async def delad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     delete_ad(code, chat.id)
 
-    await update.message.reply_text(f"✅ Đã xoá quảng cáo {code}.")
+    await update.message.reply_text(f"✅ Đã xoá quảng cáo {code} trong chat này.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -800,11 +847,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update, context):
         return
 
+    # gửi welcome
     await update.message.reply_text(
         WELCOME_TEXT,
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown",
     )
+
+    # TỰ ĐỘNG GỬI + GHIM QUẢNG CÁO MỚI NHẤT (NẾU CÓ)
+    latest_ad = get_latest_ad()
+    if latest_ad:
+        final_text = f"[QC {latest_ad['code']}] {latest_ad['content']}"
+        try:
+            msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=final_text,
+            )
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=msg.message_id,
+                    disable_notification=True,
+                )
+            except Exception as e_pin:
+                logger.exception("Không ghim được QC trong start: %s", e_pin)
+        except Exception as e_send:
+            logger.exception("Không gửi QC trong start: %s", e_send)
 
 
 async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1090,7 +1158,7 @@ async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Lệnh không tồn tại. Hãy dùng:\n"
-        "/upload /getlink /myfiles /folders /setfolder /setpass /version",
+        "/upload /getlink /myfiles /folders /setfolder /setpass /version /ad /delad",
         reply_markup=get_main_keyboard(),
     )
 
