@@ -145,9 +145,21 @@ def init_db():
         );
     """)
 
+    # ADS (quảng cáo ghim)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ads (
+            id          SERIAL PRIMARY KEY,
+            code        TEXT UNIQUE,        -- ví dụ: qc1, qc2
+            chat_id     BIGINT,
+            message_id  BIGINT,
+            content     TEXT,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     conn.commit()
     conn.close()
-    logger.info("Database OK (PostgreSQL, password + whitelist).")
+    logger.info("Database OK (PostgreSQL, password + whitelist + ads).")
 
 
 def get_or_create_user(tg_user):
@@ -375,6 +387,57 @@ def get_files_of_owner(owner_id, folder_id=None, limit=30):
     return rows
 
 
+# ============ ADS (QUẢNG CÁO GHIM) ============
+
+def create_ad(chat_id: int, message_id: int, content: str) -> str:
+    """
+    Tạo bản ghi quảng cáo, trả về code dạng qc1, qc2...
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    # tạo tạm, chưa có code
+    cur.execute(
+        """
+        INSERT INTO ads (code, chat_id, message_id, content)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id;
+        """,
+        ("", chat_id, message_id, content),
+    )
+    row = cur.fetchone()
+    ad_id = row["id"]
+    code = f"qc{ad_id}"
+    cur.execute("UPDATE ads SET code = %s WHERE id = %s", (code, ad_id))
+    conn.commit()
+    conn.close()
+    return code
+
+
+def get_ad_by_code(code: str, chat_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM ads WHERE code = %s AND chat_id = %s",
+        (code, chat_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def delete_ad(code: str, chat_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM ads WHERE code = %s AND chat_id = %s",
+        (code, chat_id),
+    )
+    deleted = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 # ============ WHITELIST ============
 
 def is_user_allowed(user_id: int) -> bool:
@@ -594,6 +657,96 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ Đã thêm ID {target_id} vào danh sách được phép dùng bot."
     )
+
+
+async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /ad Nội dung quảng cáo
+    Chỉ OWNER dùng. Bot gửi tin, sửa text cho có mã qc1, qc2..., ghim message.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if OWNER_ID and user.id != OWNER_ID:
+        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh /ad.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Thiếu nội dung quảng cáo.")
+        return
+
+    ad_text = " ".join(context.args).strip()
+
+    # gửi tin quảng cáo
+    msg = await chat.send_message(ad_text)
+
+    # lưu vào DB, sinh mã qc1, qc2...
+    code = create_ad(chat.id, msg.message_id, ad_text)
+
+    # sửa lại nội dung để có mã qc ở đầu
+    try:
+        new_text = f"[QC {code}] {ad_text}"
+        await msg.edit_text(new_text)
+    except Exception as e:
+        logger.exception("Không edit được nội dung QC: %s", e)
+
+    # ghim tin
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=chat.id,
+            message_id=msg.message_id,
+            disable_notification=True,
+        )
+    except Exception as e:
+        logger.exception("Không ghim được QC: %s", e)
+
+    await update.message.reply_text(f"✅ Đã đăng & ghim quảng cáo với mã: {code}")
+
+
+async def delad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /delad qc1  hoặc  /delad 1  (hiểu là qc1)
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if OWNER_ID and user.id != OWNER_ID:
+        await update.message.reply_text("❌ Bạn không có quyền dùng lệnh /delad.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Thiếu mã quảng cáo. Ví dụ: /delad qc1")
+        return
+
+    raw_code = context.args[0].strip().lower()
+    if raw_code.startswith("#"):
+        raw_code = raw_code[1:]
+    if not raw_code.startswith("qc"):
+        code = "qc" + raw_code
+    else:
+        code = raw_code
+
+    ad = get_ad_by_code(code, chat.id)
+    if not ad:
+        await update.message.reply_text(f"❌ Không tìm thấy quảng cáo với mã {code}.")
+        return
+
+    msg_id = ad["message_id"]
+
+    # bỏ ghim + xoá message nếu được
+    try:
+        await context.bot.unpin_chat_message(chat_id=chat.id, message_id=msg_id)
+    except Exception as e:
+        logger.exception("Không unpin được QC: %s", e)
+
+    try:
+        await context.bot.delete_message(chat_id=chat.id, message_id=msg_id)
+    except Exception as e:
+        logger.exception("Không xoá được message QC: %s", e)
+
+    delete_ad(code, chat.id)
+
+    await update.message.reply_text(f"✅ Đã xoá quảng cáo {code}.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -965,6 +1118,8 @@ def main():
     app.add_handler(CommandHandler("setfolder", setfolder_cmd))
     app.add_handler(CommandHandler("setpass", setpass_cmd))
     app.add_handler(CommandHandler("allow", allow_cmd))
+    app.add_handler(CommandHandler("ad", ad_cmd))
+    app.add_handler(CommandHandler("delad", delad_cmd))
 
     app.add_handler(
         MessageHandler(
