@@ -395,14 +395,14 @@ def create_ad(chat_id: int, message_id: int, content: str) -> str:
     """
     conn = get_conn()
     cur = conn.cursor()
-    # tạo tạm, chưa có code
+    # tạo bản ghi chưa có code (NULL), tránh trùng UNIQUE
     cur.execute(
         """
-        INSERT INTO ads (code, chat_id, message_id, content)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO ads (chat_id, message_id, content)
+        VALUES (%s, %s, %s)
         RETURNING id;
         """,
-        ("", chat_id, message_id, content),
+        (chat_id, message_id, content),
     )
     row = cur.fetchone()
     ad_id = row["id"]
